@@ -20,7 +20,6 @@
  * The agent is given a hard cap of 10 reasoning steps to prevent runaway loops.
  */
 
-const axios = require('axios')
 const { z } = require('zod')
 const { DynamicStructuredTool } = require('@langchain/core/tools')
 const { createReactAgent } = require('@langchain/langgraph/prebuilt')
@@ -56,7 +55,8 @@ async function getValidToken(conn) {
     if (!clientSecret) params.append('client_id', clientId)
     const headers = { 'Content-Type': 'application/x-www-form-urlencoded' }
     if (clientSecret) headers.Authorization = 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
-    const { data } = await axios.post('https://api.x.com/2/oauth2/token', params.toString(), { headers })
+    const res = await fetch('https://api.x.com/2/oauth2/token', { method: 'POST', headers, body: params.toString() })
+    const data = await res.json()
     conn.accessToken = data.access_token
     if (data.refresh_token) conn.refreshToken = data.refresh_token
     conn.tokenExpiresAt = data.expires_in ? Date.now() + data.expires_in * 1000 : null
@@ -121,26 +121,23 @@ const webSearchTool = new DynamicStructuredTool({
       const GOOGLE_CSE_ID  = process.env.GOOGLE_CSE_ID
 
       if (GOOGLE_CSE_KEY && GOOGLE_CSE_ID) {
-        const { data } = await axios.get('https://www.googleapis.com/customsearch/v1', {
-          params: { key: GOOGLE_CSE_KEY, cx: GOOGLE_CSE_ID, q: query, num: Math.min(numResults, 5) },
-        })
-        const results = (data.items ?? []).map(item =>
+        const qs = new URLSearchParams({ key: GOOGLE_CSE_KEY, cx: GOOGLE_CSE_ID, q: query, num: String(Math.min(numResults, 5)) })
+        const res = await fetch(`https://www.googleapis.com/customsearch/v1?${qs}`)
+        const json = await res.json()
+        const results = (json.items ?? []).map(item =>
           `**${item.title}**\n${item.snippet}\nURL: ${item.link}`
         ).join('\n\n')
         return results || 'No results found.'
       }
 
-      // Fallback: DuckDuckGo Instant Answer API (no key required, limited)
-      const { data } = await axios.get('https://api.duckduckgo.com/', {
-        params: { q: query, format: 'json', no_html: 1, skip_disambig: 1 },
-        timeout: 10000,
-      })
+      // Fallback: DuckDuckGo Instant Answer API
+      const qs = new URLSearchParams({ q: query, format: 'json', no_html: '1', skip_disambig: '1' })
+      const res = await fetch(`https://api.duckduckgo.com/?${qs}`)
+      const json = await res.json()
       const parts = []
-      if (data.AbstractText) parts.push(data.AbstractText)
-      if (data.RelatedTopics) {
-        data.RelatedTopics.slice(0, numResults).forEach(t => {
-          if (t.Text) parts.push(t.Text)
-        })
+      if (json.AbstractText) parts.push(json.AbstractText)
+      if (json.RelatedTopics) {
+        json.RelatedTopics.slice(0, numResults).forEach(t => { if (t.Text) parts.push(t.Text) })
       }
       return parts.join('\n\n') || `No instant answer found for: ${query}`
     } catch (err) {
@@ -272,11 +269,12 @@ Rules:
 
     // Post the tweet
     const accessToken = await getValidToken(conn)
-    const { data: tweetResp } = await axios.post(
-      'https://api.x.com/2/tweets',
-      { text: _draftedTweet.text },
-      { headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' } }
-    )
+    const tweetRes = await fetch('https://api.x.com/2/tweets', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text: _draftedTweet.text }),
+    })
+    const tweetResp = await tweetRes.json()
     const tweet = tweetResp.data
 
     // Persist XPost with decision summary

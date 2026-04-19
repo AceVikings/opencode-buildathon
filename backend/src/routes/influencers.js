@@ -44,7 +44,6 @@
 
 const { Router } = require('express')
 const multer = require('multer')
-const axios = require('axios')
 const { authenticate } = require('../middleware/auth')
 const Influencer = require('../models/Influencer')
 const XConnection = require('../models/XConnection')
@@ -365,31 +364,24 @@ router.get('/:id/videos/:videoId', async (req, res) => {
 // ────────────────────────────────────────────────────────────────────────────
 
 const X_TWEETS_URL = 'https://api.x.com/2/tweets'
+const X_MEDIA_UPLOAD_URL = 'https://api.x.com/2/media/upload'
 const X_REVOKE_URL = 'https://api.x.com/2/oauth2/revoke'
 
-function xBasicAuth() {
+function xTokenHeaders() {
   const id = process.env.X_CLIENT_ID
   const secret = process.env.X_CLIENT_SECRET
-  return 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64')
+  const h = { 'Content-Type': 'application/x-www-form-urlencoded' }
+  if (secret) h.Authorization = 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64')
+  return h
 }
 
 async function getValidToken(conn) {
   const BUFFER = 5 * 60 * 1000
   if (conn.tokenExpiresAt && Date.now() >= conn.tokenExpiresAt - BUFFER && conn.refreshToken) {
-    const params = new URLSearchParams({
-      grant_type: 'refresh_token',
-      refresh_token: conn.refreshToken,
-    })
-    const { data } = await axios.post(
-      'https://api.x.com/2/oauth2/token',
-      params.toString(),
-      {
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          Authorization: xBasicAuth(),
-        },
-      }
-    )
+    const params = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: conn.refreshToken })
+    if (!process.env.X_CLIENT_SECRET) params.append('client_id', process.env.X_CLIENT_ID)
+    const res = await fetch('https://api.x.com/2/oauth2/token', { method: 'POST', headers: xTokenHeaders(), body: params.toString() })
+    const data = await res.json()
     conn.accessToken = data.access_token
     if (data.refresh_token) conn.refreshToken = data.refresh_token
     conn.tokenExpiresAt = data.expires_in ? Date.now() + data.expires_in * 1000 : null
@@ -421,7 +413,132 @@ router.get('/:id/x/status', async (req, res) => {
   })
 })
 
-// POST /api/influencers/:id/x/post  — body: { text }
+/**
+ * POST /api/influencers/:id/x/media/upload
+ * multipart/form-data: field "media" (image/jpeg, image/png, image/webp, image/gif, video/mp4)
+ *
+ * Uploads media to X via POST /2/media/upload and returns { mediaId }.
+ * The mediaId can then be passed to /x/post as mediaIds[].
+ *
+ * Images: upload directly as multipart/form-data, media_category=tweet_image.
+ * Videos: the /2/media/upload endpoint currently supports images only for one-shot
+ *         upload. Videos require the legacy chunked upload (/1.1/media/upload INIT/APPEND/FINALIZE).
+ *         We detect video and route to the legacy chunked flow automatically.
+ */
+router.post('/:id/x/media/upload', upload.single('media'), async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  if (!inf.xConnectionId) {
+    return res.status(400).json({ error: 'No X account connected to this influencer' })
+  }
+  if (!req.file) {
+    return res.status(400).json({ error: 'media file is required (field: media)' })
+  }
+
+  const conn = await XConnection.findById(inf.xConnectionId)
+  if (!conn) {
+    inf.xConnectionId = null
+    await inf.save()
+    return res.status(400).json({ error: 'X connection no longer exists — reconnect' })
+  }
+
+  const accessToken = await getValidToken(conn)
+  const isVideo = req.file.mimetype.startsWith('video/')
+
+  const xAuthHeader = { Authorization: `Bearer ${accessToken}` }
+
+  if (isVideo) {
+    // ── Video: chunked upload via legacy v1.1 endpoint ────────────────────
+    const CHUNK_SIZE = 5 * 1024 * 1024
+    const fileBuffer = req.file.buffer
+    const totalBytes = fileBuffer.length
+
+    // INIT
+    const initParams = new URLSearchParams({
+      command: 'INIT', total_bytes: String(totalBytes),
+      media_type: req.file.mimetype, media_category: 'tweet_video',
+    })
+    const initRes = await fetch('https://upload.twitter.com/1.1/media/upload.json', {
+      method: 'POST',
+      headers: { ...xAuthHeader, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: initParams.toString(),
+    })
+    const initData = await initRes.json()
+    const mediaId = initData.media_id_string
+
+    // APPEND
+    let segmentIndex = 0
+    for (let offset = 0; offset < totalBytes; offset += CHUNK_SIZE) {
+      const chunk = fileBuffer.slice(offset, offset + CHUNK_SIZE)
+      const form = new FormData()
+      form.append('command', 'APPEND')
+      form.append('media_id', mediaId)
+      form.append('segment_index', String(segmentIndex++))
+      form.append('media', new Blob([chunk], { type: req.file.mimetype }), req.file.originalname)
+      await fetch('https://upload.twitter.com/1.1/media/upload.json', { method: 'POST', headers: xAuthHeader, body: form })
+    }
+
+    // FINALIZE
+    const finalizeParams = new URLSearchParams({ command: 'FINALIZE', media_id: mediaId })
+    const finalizeRes = await fetch('https://upload.twitter.com/1.1/media/upload.json', {
+      method: 'POST',
+      headers: { ...xAuthHeader, 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: finalizeParams.toString(),
+    })
+    const finalizeData = await finalizeRes.json()
+
+    // Poll for processing if needed
+    if (finalizeData.processing_info?.state === 'pending') {
+      let checkAfter = finalizeData.processing_info.check_after_secs ?? 5
+      for (let i = 0; i < 12; i++) {
+        await new Promise(r => setTimeout(r, checkAfter * 1000))
+        const statusRes = await fetch(
+          `https://upload.twitter.com/1.1/media/upload.json?command=STATUS&media_id=${mediaId}`,
+          { headers: xAuthHeader }
+        )
+        const statusData = await statusRes.json()
+        const state = statusData.processing_info?.state
+        if (state === 'succeeded') break
+        if (state === 'failed') return res.status(422).json({ error: 'X video processing failed', detail: statusData.processing_info })
+        checkAfter = statusData.processing_info?.check_after_secs ?? 5
+      }
+    }
+
+    return res.json({ mediaId, mediaType: 'video' })
+  }
+
+  // ── Image: one-shot multipart upload via v2 endpoint ─────────────────────
+  const form = new FormData()
+  form.append('media', new Blob([req.file.buffer], { type: req.file.mimetype }), req.file.originalname)
+  form.append('media_category', 'tweet_image')
+
+  const uploadRes = await fetch(X_MEDIA_UPLOAD_URL, { method: 'POST', headers: xAuthHeader, body: form })
+  const uploadData = await uploadRes.json()
+
+  const mediaId = uploadData.data?.id
+  if (!mediaId) {
+    return res.status(500).json({ error: 'X media upload did not return a media ID', detail: uploadData })
+  }
+
+  // Poll if processing (animated GIFs etc.)
+  if (uploadData.data?.processing_info?.state === 'pending') {
+    let checkAfter = uploadData.data.processing_info.check_after_secs ?? 3
+    for (let i = 0; i < 10; i++) {
+      await new Promise(r => setTimeout(r, checkAfter * 1000))
+      const statusRes = await fetch(`https://api.x.com/2/media/upload?media_id=${mediaId}`, { headers: xAuthHeader })
+      const statusData = await statusRes.json()
+      const state = statusData.data?.processing_info?.state
+      if (state === 'succeeded' || !state) break
+      if (state === 'failed') return res.status(422).json({ error: 'X media processing failed' })
+      checkAfter = statusData.data?.processing_info?.check_after_secs ?? 3
+    }
+  }
+
+  return res.json({ mediaId, mediaType: 'image' })
+})
+
+// POST /api/influencers/:id/x/post  — body: { text, mediaIds?: string[] }
 router.post('/:id/x/post', async (req, res) => {
   const inf = await getOwned(req.params.id, req.user.uid, res)
   if (!inf) return
@@ -430,12 +547,15 @@ router.post('/:id/x/post', async (req, res) => {
     return res.status(400).json({ error: 'No X account connected to this influencer' })
   }
 
-  const { text } = req.body
+  const { text, mediaIds } = req.body
   if (!text || typeof text !== 'string' || !text.trim()) {
     return res.status(400).json({ error: 'text is required' })
   }
   if (text.length > 280) {
     return res.status(400).json({ error: 'text exceeds 280 characters' })
+  }
+  if (mediaIds && (!Array.isArray(mediaIds) || mediaIds.length > 4)) {
+    return res.status(400).json({ error: 'mediaIds must be an array of up to 4 IDs' })
   }
 
   const conn = await XConnection.findById(inf.xConnectionId)
@@ -447,17 +567,17 @@ router.post('/:id/x/post', async (req, res) => {
 
   const accessToken = await getValidToken(conn)
 
-  const { data: tweetData } = await axios.post(
-    X_TWEETS_URL,
-    { text: text.trim() },
-    {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
-    }
-  )
+  const tweetBody = {
+    text: text.trim(),
+    ...(mediaIds?.length ? { media: { media_ids: mediaIds } } : {}),
+  }
 
+  const tweetRes = await fetch(X_TWEETS_URL, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(tweetBody),
+  })
+  const tweetData = await tweetRes.json()
   const tweet = tweetData.data
 
   // Persist the post so analytics can be tracked
@@ -467,6 +587,7 @@ router.post('/:id/x/post', async (req, res) => {
     tweetId: tweet.id,
     text: tweet.text ?? text.trim(),
     postedAt: new Date(),
+    mediaIds: mediaIds ?? [],
   })
 
   return res.status(201).json({ tweet })
@@ -482,16 +603,8 @@ router.delete('/:id/x/disconnect', async (req, res) => {
     if (conn) {
       // Best-effort revocation
       try {
-        const params = new URLSearchParams({
-          token: conn.accessToken,
-          token_type_hint: 'access_token',
-        })
-        await axios.post(X_REVOKE_URL, params.toString(), {
-          headers: {
-            'Content-Type': 'application/x-www-form-urlencoded',
-            Authorization: xBasicAuth(),
-          },
-        })
+        const params = new URLSearchParams({ token: conn.accessToken, token_type_hint: 'access_token' })
+        await fetch(X_REVOKE_URL, { method: 'POST', headers: xTokenHeaders(), body: params.toString() })
       } catch (e) {
         console.warn('[x/disconnect] token revocation failed (continuing):', e.message)
       }

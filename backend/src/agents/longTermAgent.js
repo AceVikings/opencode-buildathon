@@ -23,7 +23,6 @@
  *   write_strategy        — signal tool to finalise the strategy document
  */
 
-const axios = require('axios')
 const { z } = require('zod')
 const { DynamicStructuredTool } = require('@langchain/core/tools')
 const { createReactAgent } = require('@langchain/langgraph/prebuilt')
@@ -119,21 +118,20 @@ const webSearchTool = new DynamicStructuredTool({
       const GOOGLE_CSE_ID  = process.env.GOOGLE_CSE_ID
 
       if (GOOGLE_CSE_KEY && GOOGLE_CSE_ID) {
-        const { data } = await axios.get('https://www.googleapis.com/customsearch/v1', {
-          params: { key: GOOGLE_CSE_KEY, cx: GOOGLE_CSE_ID, q: query, num: Math.min(numResults, 5) },
-        })
-        return (data.items ?? []).map(item =>
+        const qs = new URLSearchParams({ key: GOOGLE_CSE_KEY, cx: GOOGLE_CSE_ID, q: query, num: String(Math.min(numResults, 5)) })
+        const res = await fetch(`https://www.googleapis.com/customsearch/v1?${qs}`)
+        const json = await res.json()
+        return (json.items ?? []).map(item =>
           `**${item.title}**\n${item.snippet}\n${item.link}`
         ).join('\n\n') || 'No results.'
       }
 
-      const { data } = await axios.get('https://api.duckduckgo.com/', {
-        params: { q: query, format: 'json', no_html: 1, skip_disambig: 1 },
-        timeout: 10000,
-      })
+      const qs = new URLSearchParams({ q: query, format: 'json', no_html: '1', skip_disambig: '1' })
+      const res = await fetch(`https://api.duckduckgo.com/?${qs}`)
+      const json = await res.json()
       const parts = []
-      if (data.AbstractText) parts.push(data.AbstractText)
-      ;(data.RelatedTopics ?? []).slice(0, numResults).forEach(t => { if (t.Text) parts.push(t.Text) })
+      if (json.AbstractText) parts.push(json.AbstractText)
+      ;(json.RelatedTopics ?? []).slice(0, numResults).forEach(t => { if (t.Text) parts.push(t.Text) })
       return parts.join('\n\n') || `No results for: ${query}`
     } catch (err) {
       return `Web search failed: ${err.message}`
