@@ -37,6 +37,13 @@ export type InfluencerStatus =
   | 'image_generated'
   | 'complete'
 
+export interface AvatarCandidate {
+  avatarId: string
+  groupId: string | null
+  previewImageUrl: string | null
+  previewVideoUrl: string | null
+}
+
 export interface Influencer {
   _id: string
   uid: string
@@ -48,9 +55,10 @@ export interface Influencer {
   brandSources: BrandSource[]
   brandBrief: string
   imagePrompt: string
-  imageCandidates: string[]
-  selectedImageGcsPath: string | null
+  avatarCandidates: AvatarCandidate[]
+  heygenAvatarId: string | null
   selectedImageUrl: string | null
+  selectedPreviewVideoUrl: string | null
   xConnectionId: string | null
   status: InfluencerStatus
   createdAt: string
@@ -145,32 +153,79 @@ export async function analyseBrand(id: string): Promise<{
   return res.json()
 }
 
-export async function generateImages(id: string, prompt?: string): Promise<{
-  candidates: string[]
-  gcspaths: string[]
+// ── HeyGen Avatar generation ──────────────────────────────────────────────────
+
+export async function generateAvatars(id: string, prompt?: string): Promise<{
+  candidates: AvatarCandidate[]
+  influencer: Influencer
 }> {
-  const res = await apiFetch(`/influencers/${id}/images/generate`, {
+  const res = await apiFetch(`/influencers/${id}/avatars/generate`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(prompt ? { prompt } : {}),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
-    throw new Error((err as { error?: string }).error ?? 'Failed to generate images')
+    throw new Error((err as { error?: string }).error ?? 'Failed to generate avatars')
   }
   return res.json()
 }
 
-export async function selectImage(id: string, gcsPath: string): Promise<{
-  selectedImageUrl: string
+export async function selectAvatar(id: string, avatarId: string): Promise<{
   influencer: Influencer
 }> {
-  const res = await apiFetch(`/influencers/${id}/images/select`, {
+  const res = await apiFetch(`/influencers/${id}/avatars/select`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ gcsPath }),
+    body: JSON.stringify({ avatarId }),
   })
-  if (!res.ok) throw new Error('Failed to select image')
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error((err as { error?: string }).error ?? 'Failed to select avatar')
+  }
+  return res.json()
+}
+
+// ── HeyGen Video / UGC generation ─────────────────────────────────────────────
+
+export interface VideoGenerateOptions {
+  script: string
+  voiceId?: string
+  title?: string
+  aspectRatio?: '16:9' | '9:16'
+  resolution?: '1080p' | '720p' | '4k'
+  motionPrompt?: string
+  expressiveness?: 'high' | 'medium' | 'low'
+}
+
+export interface VideoStatusResponse {
+  videoId: string
+  status: 'pending' | 'processing' | 'completed' | 'failed'
+  videoUrl: string | null
+  thumbnailUrl: string | null
+  duration: number | null
+  failureMessage: string | null
+}
+
+export async function generateVideo(id: string, opts: VideoGenerateOptions): Promise<{
+  videoId: string
+  status: string
+}> {
+  const res = await apiFetch(`/influencers/${id}/videos/generate`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error((err as { error?: string }).error ?? 'Failed to start video generation')
+  }
+  return res.json()
+}
+
+export async function getVideoStatus(id: string, videoId: string): Promise<VideoStatusResponse> {
+  const res = await apiFetch(`/influencers/${id}/videos/${videoId}`)
+  if (!res.ok) throw new Error('Failed to fetch video status')
   return res.json()
 }
 

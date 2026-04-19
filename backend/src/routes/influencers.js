@@ -232,106 +232,122 @@ router.post('/:id/brand/analyse', async (req, res) => {
 })
 
 // ────────────────────────────────────────────────────────────────────────────
-// IMAGE GENERATION
+// AVATAR GENERATION (HeyGen)
 // ────────────────────────────────────────────────────────────────────────────
 
-// Generate 4 candidates
-router.post('/:id/images/generate', async (req, res) => {
+/**
+ * POST /api/influencers/:id/avatars/generate
+ * Body: { prompt?: string }  — defaults to inf.imagePrompt if omitted
+ *
+ * Spawns 4 HeyGen prompt-based avatars in parallel, polls until completed,
+ * and returns the candidate list with previewImageUrl + avatarId.
+ */
+router.post('/:id/avatars/generate', async (req, res) => {
   const inf = await getOwned(req.params.id, req.user.uid, res)
   if (!inf) return
 
   const prompt = req.body.prompt ?? inf.imagePrompt
   if (!prompt) {
-    return res.status(400).json({ error: 'Provide a prompt or run brand analysis first' })
+    return res.status(400).json({ error: 'Provide an appearance prompt or run brand analysis first' })
   }
 
-  // Update stored prompt if a new one was passed
   if (req.body.prompt && req.body.prompt !== inf.imagePrompt) {
     inf.imagePrompt = req.body.prompt
   }
 
-  // Generate 4 images (base64 PNGs)
-  const base64Images = await generateInfluencerImages(prompt)
+  const candidates = await generateAvatarCandidates(prompt, inf.name)
 
-  // Store each candidate in GCS and collect paths
-  const candidatePaths = await Promise.all(
-    base64Images.map(async (b64, i) => {
-      const buffer = Buffer.from(b64, 'base64')
-      const gcsPath = `influencers/${inf._id}/candidates/${Date.now()}-${i}.png`
-      await uploadFile(buffer, gcsPath, 'image/png')
-      return gcsPath
-    })
-  )
-
-  inf.imageCandidates = candidatePaths
+  inf.avatarCandidates = candidates
   inf.status = 'image_generated'
   await inf.save()
 
-  // Return signed URLs so the client can preview them
-  const signedUrls = await Promise.all(
-    candidatePaths.map((p) => getSignedUrl(p, 30 * 60 * 1000)) // 30 min
-  )
-
-  return res.json({ candidates: signedUrls, gcspaths: candidatePaths })
+  return res.json({ candidates, influencer: inf })
 })
 
-// Select one of the generated candidates
-router.post('/:id/images/select', async (req, res) => {
+/**
+ * POST /api/influencers/:id/avatars/select
+ * Body: { avatarId: string }  — the HeyGen look id from a candidate
+ *
+ * Saves the selected avatar to the influencer document.
+ */
+router.post('/:id/avatars/select', async (req, res) => {
   const inf = await getOwned(req.params.id, req.user.uid, res)
   if (!inf) return
 
-  const { gcsPath } = req.body
-  if (!gcsPath) return res.status(400).json({ error: 'gcsPath is required' })
-  if (!inf.imageCandidates.includes(gcsPath)) {
-    return res.status(400).json({ error: 'gcsPath is not one of the generated candidates' })
+  const { avatarId } = req.body
+  if (!avatarId) return res.status(400).json({ error: 'avatarId is required' })
+
+  const candidate = (inf.avatarCandidates ?? []).find((c) => c.avatarId === avatarId)
+  if (!candidate) {
+    return res.status(400).json({ error: 'avatarId is not one of the generated candidates' })
   }
 
-  inf.selectedImageGcsPath = gcsPath
-  const signedUrl = await getSignedUrl(gcsPath, 60 * 60 * 1000) // 1 hr
-  inf.selectedImageUrl = signedUrl
+  inf.heygenAvatarId = avatarId
+  inf.selectedImageUrl = candidate.previewImageUrl ?? null
+  inf.selectedPreviewVideoUrl = candidate.previewVideoUrl ?? null
   inf.status = 'complete'
   await inf.save()
 
-  return res.json({ selectedImageUrl: signedUrl, influencer: inf })
+  return res.json({ influencer: inf })
 })
 
-// Upload a custom image directly (skips generation)
-router.post('/:id/images/upload', upload.single('image'), async (req, res) => {
+// ────────────────────────────────────────────────────────────────────────────
+// VIDEO / UGC GENERATION (HeyGen)
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/influencers/:id/videos/generate
+ * Body: {
+ *   script: string,
+ *   voiceId?: string,
+ *   title?: string,
+ *   aspectRatio?: '16:9' | '9:16',
+ *   resolution?: '1080p' | '720p' | '4k',
+ *   motionPrompt?: string,
+ *   expressiveness?: 'high' | 'medium' | 'low',
+ * }
+ *
+ * Starts a HeyGen video generation job. Returns { videoId, status } immediately.
+ * The client polls GET /api/influencers/:id/videos/:videoId for completion.
+ */
+router.post('/:id/videos/generate', async (req, res) => {
   const inf = await getOwned(req.params.id, req.user.uid, res)
   if (!inf) return
 
-  if (!req.file) return res.status(400).json({ error: 'image file is required (field: image)' })
-
-  const allowed = ['image/png', 'image/jpeg', 'image/webp']
-  if (!allowed.includes(req.file.mimetype)) {
-    return res.status(400).json({ error: 'Only PNG, JPEG and WEBP are accepted' })
+  if (!inf.heygenAvatarId) {
+    return res.status(400).json({ error: 'No avatar selected for this influencer — complete Step 3 first' })
   }
 
-  const gcsPath = `influencers/${inf._id}/selected/${Date.now()}-${req.file.originalname}`
-  await uploadFile(req.file.buffer, gcsPath, req.file.mimetype)
-  const signedUrl = await getSignedUrl(gcsPath, 60 * 60 * 1000)
+  const { script, voiceId, title, aspectRatio, resolution, motionPrompt, expressiveness } = req.body
+  if (!script || !script.trim()) {
+    return res.status(400).json({ error: 'script is required' })
+  }
 
-  inf.selectedImageGcsPath = gcsPath
-  inf.selectedImageUrl = signedUrl
-  inf.status = 'complete'
-  await inf.save()
+  const { videoId, status } = await createVideo({
+    avatarId: inf.heygenAvatarId,
+    script: script.trim(),
+    voiceId,
+    title: title ?? `${inf.name} — ${new Date().toLocaleDateString()}`,
+    aspectRatio,
+    resolution,
+    motionPrompt,
+    expressiveness,
+  })
 
-  return res.json({ selectedImageUrl: signedUrl, influencer: inf })
+  return res.status(201).json({ videoId, status })
 })
 
-// Refresh the signed URL for the selected image
-router.get('/:id/images/url', async (req, res) => {
+/**
+ * GET /api/influencers/:id/videos/:videoId
+ * Polls HeyGen for the current status of a video generation job.
+ * Returns { videoId, status, videoUrl, thumbnailUrl, duration, failureMessage }
+ */
+router.get('/:id/videos/:videoId', async (req, res) => {
   const inf = await getOwned(req.params.id, req.user.uid, res)
   if (!inf) return
 
-  if (!inf.selectedImageGcsPath) {
-    return res.status(404).json({ error: 'No selected image yet' })
-  }
-
-  const url = await getSignedUrl(inf.selectedImageGcsPath, 60 * 60 * 1000)
-  inf.selectedImageUrl = url
-  await inf.save()
-  return res.json({ url })
+  const result = await getVideoStatus(req.params.videoId)
+  return res.json(result)
 })
 
 // ────────────────────────────────────────────────────────────────────────────
