@@ -43,6 +43,9 @@ const xPostSchema = new Schema(
 
     // When metrics were last successfully refreshed
     metricsUpdatedAt: { type: Date, default: null },
+
+    // Short-term agent decision summary stored after autonomous posting
+    agentDecisionSummary: { type: String, default: null },
   },
   { timestamps: true }
 )

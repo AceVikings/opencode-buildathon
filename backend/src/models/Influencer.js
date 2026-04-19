@@ -56,6 +56,11 @@ const influencerSchema = new Schema(
     // Preview video URL from HeyGen for the selected avatar
     selectedPreviewVideoUrl: { type: String, default: null },
 
+    // ── Agent memory ─────────────────────────────────────────────────────────
+    // Long-term strategy document produced by LongTermAgent
+    longTermStrategy: { type: String, default: '' },
+    longTermStrategyUpdatedAt: { type: Date, default: null },
+
     // ── Workflow state ───────────────────────────────────────────────────────
     // draft → persona_done → brand_done → image_generated → complete
     status: {
