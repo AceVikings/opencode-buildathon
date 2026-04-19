@@ -257,112 +257,105 @@ async function waitForVideo(influencerId, videoId, maxWaitMs = 5 * 60_000) {
   throw new Error(`HeyGen video ${videoId} timed out after ${maxWaitMs / 1000}s`)
 }
 
-// ── Upload video to X via chunked v1.1 upload ─────────────────────────────────
-// POST /2/media/upload only supports images (tweet_image). Videos require the
-// legacy chunked upload endpoint: upload.twitter.com/1.1/media/upload.json
-// Flow: INIT → APPEND (5 MB chunks) → FINALIZE → poll STATUS until succeeded
+// ── Upload video to X — chunked v2 endpoint ──────────────────────────────────
+// POST https://api.x.com/2/media/upload with multipart/form-data + Bearer token
+// Flow: INIT → APPEND (chunks) → FINALIZE → poll STATUS → returns media_id
 
-const CHUNK_SIZE = 5 * 1024 * 1024  // 5 MB
+const CHUNK_SIZE = 5 * 1024 * 1024  // 5 MB per chunk
 
 async function uploadVideoToX(accessToken, videoUrl) {
-  // 1. Download the video from HeyGen
+  const auth = { Authorization: `Bearer ${accessToken}` }
+
+  // 1. Download video from HeyGen CDN
   const dlRes = await fetch(videoUrl)
-  if (!dlRes.ok) throw new Error(`Failed to download video from HeyGen: ${dlRes.status}`)
+  if (!dlRes.ok) throw new Error(`Video download failed: ${dlRes.status}`)
   const videoBuffer = Buffer.from(await dlRes.arrayBuffer())
   const totalBytes = videoBuffer.length
-  const authHeader = { Authorization: `Bearer ${accessToken}` }
-
-  console.log(`[uploadVideoToX] Downloaded ${totalBytes} bytes, starting chunked upload…`)
+  console.log(`[uploadVideoToX] Downloaded ${(totalBytes / 1024 / 1024).toFixed(1)} MB`)
 
   // 2. INIT
-  const initParams = new URLSearchParams({
-    command: 'INIT',
-    total_bytes: String(totalBytes),
-    media_type: 'video/mp4',
-    media_category: 'tweet_video',
-  })
-  const initRes = await fetch('https://upload.twitter.com/1.1/media/upload.json', {
+  const initForm = new FormData()
+  initForm.append('command', 'INIT')
+  initForm.append('media_type', 'video/mp4')
+  initForm.append('total_bytes', String(totalBytes))
+  initForm.append('media_category', 'tweet_video')
+
+  const initRes = await fetch('https://api.x.com/2/media/upload', {
     method: 'POST',
-    headers: { ...authHeader, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: initParams.toString(),
+    headers: auth,
+    body: initForm,
   })
   const initData = await safeJson(initRes)
-  if (!initRes.ok) throw new Error(`X media INIT failed: ${JSON.stringify(initData)}`)
-  const mediaId = initData.media_id_string
+  if (!initRes.ok) throw new Error(`INIT failed (${initRes.status}): ${JSON.stringify(initData)}`)
+  const mediaId = initData.data?.id
+  if (!mediaId) throw new Error(`INIT returned no media id: ${JSON.stringify(initData)}`)
   console.log(`[uploadVideoToX] INIT ok, media_id=${mediaId}`)
 
   // 3. APPEND chunks
   let segmentIndex = 0
   for (let offset = 0; offset < totalBytes; offset += CHUNK_SIZE) {
     const chunk = videoBuffer.slice(offset, Math.min(offset + CHUNK_SIZE, totalBytes))
-    const form = new FormData()
-    form.append('command', 'APPEND')
-    form.append('media_id', mediaId)
-    form.append('segment_index', String(segmentIndex++))
-    form.append('media', new Blob([chunk], { type: 'video/mp4' }), 'video.mp4')
+    const appendForm = new FormData()
+    appendForm.append('command', 'APPEND')
+    appendForm.append('media_id', mediaId)
+    appendForm.append('segment_index', String(segmentIndex++))
+    appendForm.append('media', new Blob([chunk], { type: 'video/mp4' }), 'chunk.mp4')
 
-    const appendRes = await fetch('https://upload.twitter.com/1.1/media/upload.json', {
+    const appendRes = await fetch('https://api.x.com/2/media/upload', {
       method: 'POST',
-      headers: authHeader,
-      body: form,
+      headers: auth,
+      body: appendForm,
     })
-    // APPEND returns 204 on success
+    // 204 No Content = success for APPEND
     if (!appendRes.ok && appendRes.status !== 204) {
       const body = await appendRes.text()
-      throw new Error(`X media APPEND segment ${segmentIndex - 1} failed (${appendRes.status}): ${body}`)
+      throw new Error(`APPEND segment ${segmentIndex - 1} failed (${appendRes.status}): ${body}`)
     }
   }
   console.log(`[uploadVideoToX] APPEND complete (${segmentIndex} chunks)`)
 
   // 4. FINALIZE
-  const finalizeParams = new URLSearchParams({ command: 'FINALIZE', media_id: mediaId })
-  const finalizeRes = await fetch('https://upload.twitter.com/1.1/media/upload.json', {
+  const finalizeForm = new FormData()
+  finalizeForm.append('command', 'FINALIZE')
+  finalizeForm.append('media_id', mediaId)
+
+  const finalizeRes = await fetch('https://api.x.com/2/media/upload', {
     method: 'POST',
-    headers: { ...authHeader, 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: finalizeParams.toString(),
+    headers: auth,
+    body: finalizeForm,
   })
   const finalizeData = await safeJson(finalizeRes)
-  if (!finalizeRes.ok) throw new Error(`X media FINALIZE failed: ${JSON.stringify(finalizeData)}`)
-  console.log(`[uploadVideoToX] FINALIZE ok, processing_info state=${finalizeData.processing_info?.state}`)
+  if (!finalizeRes.ok) throw new Error(`FINALIZE failed (${finalizeRes.status}): ${JSON.stringify(finalizeData)}`)
+  console.log(`[uploadVideoToX] FINALIZE ok, state=${finalizeData.data?.processing_info?.state}`)
 
-  // 5. Poll STATUS until succeeded
-  let checkAfterSecs = finalizeData.processing_info?.check_after_secs ?? 5
-  const maxAttempts = 20
-  for (let attempt = 0; attempt < maxAttempts; attempt++) {
-    const state = finalizeData.processing_info?.state
-    if (state === 'succeeded') break
-    if (state === 'failed') {
-      throw new Error(`X video processing failed: ${JSON.stringify(finalizeData.processing_info)}`)
-    }
-    if (!state || state === 'pending' || state === 'in_progress') {
-      await new Promise(r => setTimeout(r, checkAfterSecs * 1000))
+  // 5. Poll STATUS if processing_info returned
+  if (finalizeData.data?.processing_info) {
+    let checkAfter = finalizeData.data.processing_info.check_after_secs ?? 2
+    for (let attempt = 0; attempt < 30; attempt++) {
+      await new Promise(r => setTimeout(r, checkAfter * 1000))
       const statusRes = await fetch(
-        `https://upload.twitter.com/1.1/media/upload.json?command=STATUS&media_id=${mediaId}`,
-        { headers: authHeader }
+        `https://api.x.com/2/media/upload?command=STATUS&media_id=${mediaId}`,
+        { headers: auth }
       )
       const statusData = await safeJson(statusRes)
-      const newState = statusData.processing_info?.state
-      console.log(`[uploadVideoToX] STATUS attempt ${attempt + 1}: ${newState}`)
-      if (newState === 'succeeded') break
-      if (newState === 'failed') {
-        throw new Error(`X video processing failed: ${JSON.stringify(statusData.processing_info)}`)
-      }
-      checkAfterSecs = statusData.processing_info?.check_after_secs ?? 5
-    } else {
-      break // unknown state, proceed
+      const state = statusData.data?.processing_info?.state
+      console.log(`[uploadVideoToX] STATUS attempt ${attempt + 1}: ${state}`)
+      if (state === 'succeeded') break
+      if (state === 'failed') throw new Error(`X video processing failed: ${JSON.stringify(statusData.data?.processing_info)}`)
+      checkAfter = statusData.data?.processing_info?.check_after_secs ?? 2
     }
   }
 
-  console.log(`[uploadVideoToX] Upload complete, media_id=${mediaId}`)
+  console.log(`[uploadVideoToX] Done, media_id=${mediaId}`)
   return mediaId
 }
 
-// ── Post tweet to X (text-only or with media) ─────────────────────────────────
+// ── Post tweet to X (text only, or text + attached media) ─────────────────────
 
 async function postToX(conn, tweetText, mediaId = null) {
   const accessToken = await getValidToken(conn)
   const body = {
-    text: tweetText,
+    text: tweetText.slice(0, 280),
     ...(mediaId ? { media: { media_ids: [mediaId] } } : {}),
     made_with_ai: true,
   }
@@ -521,56 +514,77 @@ ${postTypeInstruction}`
       steps.push({ type: 'thought', tool: null, content: `Tweet: "${tweetText}"` })
     }
 
-    // ── Phase 3: generate video (if video post) ────────────────────────────
+    // ── Phase 3: generate video (if video post) — graceful fallback to text ──
     let videoId = null
     let videoUrl = null
     let thumbUrl = null
+    let videoFailed = false
 
     if (resolvedPostType === 'video') {
-      if (!inf.heygenAvatarId) throw new Error('No avatar selected — complete Step 3 first to enable video posts')
+      if (!inf.heygenAvatarId) {
+        // No avatar — degrade silently to text post
+        steps.push({ type: 'thought', tool: null, content: 'No avatar selected — falling back to text post.' })
+        videoFailed = true
+      } else {
+        try {
+          steps.push({ type: 'tool_call', tool: 'video_generate', content: `Generating video for avatar ${inf.heygenAvatarId}` })
+          const created = await createVideo({
+            avatarId:       inf.heygenAvatarId,
+            voiceId:        inf.heygenVoiceId ?? undefined,
+            script,
+            title:          `${inf.name} — ${topic?.slice(0, 40) ?? 'auto post'}`,
+            aspectRatio:    '9:16',
+            resolution:     '1080p',
+            expressiveness: 'high',
+            motionPrompt:   'natural presenting gestures, energetic but casual',
+          })
+          videoId = created.videoId
+          steps.push({ type: 'tool_result', tool: 'video_generate', content: `Video job started: ${videoId}` })
 
-      steps.push({ type: 'tool_call', tool: 'video_generate', content: `Generating video for avatar ${inf.heygenAvatarId}` })
-      const created = await createVideo({
-        avatarId:      inf.heygenAvatarId,
-        voiceId:       inf.heygenVoiceId ?? undefined,
-        script,
-        title:         `${inf.name} — ${topic?.slice(0, 40) ?? 'auto post'}`,
-        aspectRatio:   '9:16',
-        resolution:    '1080p',
-        expressiveness: 'high',
-        motionPrompt:  'natural presenting gestures, energetic but casual',
-      })
-      videoId = created.videoId
-      steps.push({ type: 'tool_result', tool: 'video_generate', content: `Video job started: ${videoId}` })
-
-      const videoStatus = await waitForVideo(influencerId, videoId)
-      videoUrl = videoStatus.videoUrl
-      thumbUrl = videoStatus.thumbnailUrl
-      steps.push({ type: 'tool_result', tool: 'video_generate', content: `Video ready: ${videoUrl}` })
+          const videoStatus = await waitForVideo(influencerId, videoId)
+          videoUrl = videoStatus.videoUrl
+          thumbUrl = videoStatus.thumbnailUrl
+          steps.push({ type: 'tool_result', tool: 'video_generate', content: `Video ready: ${videoUrl}` })
+        } catch (videoErr) {
+          console.warn(`[ShortTermAgent] Video generation failed, falling back to text post: ${videoErr.message}`)
+          steps.push({ type: 'thought', tool: null, content: `Video generation failed (${videoErr.message}) — posting text only.` })
+          videoFailed = true
+        }
+      }
     }
 
     // ── Phase 4: post or hold for approval ────────────────────────────────
     const approvalMode = opts.manual ? 'auto' : (inf.postApprovalMode ?? 'approve')
     let tweetId = null
     let approvalStatus = 'pending_approval'
+    // Only append video URL if video actually generated successfully
+    const attachVideoUrl = !videoFailed && videoUrl
 
     if (approvalMode === 'auto') {
       let xMediaId = null
 
-      // If we have a video, upload it to X first so we can attach it to the tweet
-      if (resolvedPostType === 'video' && videoUrl) {
-        steps.push({ type: 'tool_call', tool: 'x_media_upload', content: `Uploading video to X: ${videoUrl}` })
-        const accessToken = await getValidToken(conn)
-        xMediaId = await uploadVideoToX(accessToken, videoUrl)
-        steps.push({ type: 'tool_result', tool: 'x_media_upload', content: `X media_id: ${xMediaId}` })
+      if (!videoFailed && videoUrl) {
+        try {
+          const accessToken = await getValidToken(conn)
+          steps.push({ type: 'tool_call', tool: 'x_media_upload', content: `Uploading video to X…` })
+          xMediaId = await uploadVideoToX(accessToken, videoUrl)
+          steps.push({ type: 'tool_result', tool: 'x_media_upload', content: `Uploaded, media_id=${xMediaId}` })
+        } catch (uploadErr) {
+          console.warn(`[ShortTermAgent] X media upload failed, posting text only: ${uploadErr.message}`)
+          steps.push({ type: 'thought', tool: null, content: `Video upload to X failed (${uploadErr.message}) — posting text only. Video still saved in dashboard.` })
+          xMediaId = null
+        }
       }
 
       const tweet = await postToX(conn, tweetText, xMediaId)
       tweetId = tweet.id
       approvalStatus = 'posted'
-      steps.push({ type: 'decision', tool: null, content: `Auto-posted ${resolvedPostType} tweet ${tweetId}: "${tweetText}"${xMediaId ? ` [media_id: ${xMediaId}]` : ''}` })
+      const postDesc = xMediaId
+        ? `Auto-posted video tweet ${tweetId}: "${tweetText}" [media_id: ${xMediaId}]`
+        : `Auto-posted text tweet ${tweetId}: "${tweetText}" (video in dashboard)`
+      steps.push({ type: 'decision', tool: null, content: postDesc })
     } else {
-      steps.push({ type: 'decision', tool: null, content: `Held for approval: "${tweetText}"${videoUrl ? ` — video: ${videoUrl}` : ''}` })
+      steps.push({ type: 'decision', tool: null, content: `Held for approval: "${tweetText}"${videoUrl ? ` — video ready` : videoFailed ? ' — video failed, text only' : ''}` })
     }
 
     // ── Persist XPost ──────────────────────────────────────────────────────
