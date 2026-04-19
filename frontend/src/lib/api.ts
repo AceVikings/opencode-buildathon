@@ -190,6 +190,21 @@ export async function analyseBrand(id: string): Promise<{
   return res.json()
 }
 
+// ── Voices ───────────────────────────────────────────────────────────────────
+
+export interface Voice {
+  id: string
+  name: string
+  gender: 'male' | 'female' | string
+  previewUrl: string
+}
+
+export async function listVoices(): Promise<{ voices: Voice[] }> {
+  const res = await apiFetch('/influencers/voices')
+  if (!res.ok) throw new Error('Failed to fetch voices')
+  return res.json()
+}
+
 // ── Avatar generation ─────────────────────────────────────────────────────────
 
 export async function generateAvatars(id: string, prompt?: string): Promise<{
@@ -208,13 +223,13 @@ export async function generateAvatars(id: string, prompt?: string): Promise<{
   return res.json()
 }
 
-export async function selectAvatar(id: string, avatarId: string): Promise<{
+export async function selectAvatar(id: string, avatarId: string, voiceId?: string): Promise<{
   influencer: Influencer
 }> {
   const res = await apiFetch(`/influencers/${id}/avatars/select`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ avatarId }),
+    body: JSON.stringify({ avatarId, ...(voiceId ? { voiceId } : {}) }),
   })
   if (!res.ok) {
     const err = await res.json().catch(() => ({}))
