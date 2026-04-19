@@ -67,6 +67,7 @@ export interface Influencer {
   imagePrompt: string
   avatarCandidates: AvatarCandidate[]
   heygenAvatarId: string | null
+  heygenVoiceId: string | null
   selectedImageUrl: string | null
   selectedPreviewVideoUrl: string | null
   xConnectionId: string | null

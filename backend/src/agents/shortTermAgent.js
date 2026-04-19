@@ -378,6 +378,7 @@ The topic will be handed to a scriptwriter who will write in this influencer's e
     steps.push({ type: 'tool_call', tool: 'heygen_video', content: `Generating video for avatar ${inf.heygenAvatarId}` })
     const { videoId } = await createVideo({
       avatarId: inf.heygenAvatarId,
+      voiceId:  inf.heygenVoiceId ?? undefined,
       script,
       title: `${inf.name} — ${topic?.slice(0, 40) ?? 'auto post'}`,
       aspectRatio: '9:16',

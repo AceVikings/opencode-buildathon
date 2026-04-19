@@ -71,6 +71,40 @@ const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 
 // ── Auth guard on all routes ─────────────────────────────────────────────────
 router.use(authenticate)
 
+// ── Voices proxy ─────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/influencers/voices
+ * Proxies GET /v3/voices from HeyGen, filtering to English voices with previews.
+ * Returns { voices: [{ id, name, gender, previewUrl }] }
+ */
+router.get('/voices', async (_req, res) => {
+  const HEYGEN_API_KEY = process.env.HEYGEN_API_KEY
+  if (!HEYGEN_API_KEY) return res.status(503).json({ error: 'HEYGEN_API_KEY not configured' })
+
+  try {
+    // Fetch up to 100 English voices (has_more is true but 100 is plenty for a picker)
+    const r = await fetch('https://api.heygen.com/v3/voices?language=English&limit=100', {
+      headers: { 'x-api-key': HEYGEN_API_KEY },
+    })
+    const json = await r.json()
+    const voices = (json.data ?? [])
+      // Only include voices that have a preview URL so users can listen before choosing
+      .filter(v => v.preview_audio_url && v.name?.trim())
+      .map(v => ({
+        id:         v.voice_id,
+        name:       v.name.trim(),
+        gender:     v.gender,
+        previewUrl: v.preview_audio_url,
+      }))
+
+    return res.json({ voices })
+  } catch (err) {
+    console.error('[influencers/voices]', err.message)
+    return res.status(500).json({ error: 'Failed to fetch voices' })
+  }
+})
+
 // ── Ownership helper ─────────────────────────────────────────────────────────
 async function getOwned(id, uid, res) {
   const inf = await Influencer.findById(id)
@@ -285,15 +319,15 @@ router.post('/:id/avatars/generate', async (req, res) => {
 
 /**
  * POST /api/influencers/:id/avatars/select
- * Body: { avatarId: string }  — the HeyGen look id from a candidate
+ * Body: { avatarId: string, voiceId?: string }
  *
- * Saves the selected avatar to the influencer document.
+ * Saves the selected avatar (and optionally voice) to the influencer document.
  */
 router.post('/:id/avatars/select', async (req, res) => {
   const inf = await getOwned(req.params.id, req.user.uid, res)
   if (!inf) return
 
-  const { avatarId } = req.body
+  const { avatarId, voiceId } = req.body
   if (!avatarId) return res.status(400).json({ error: 'avatarId is required' })
 
   const candidate = (inf.avatarCandidates ?? []).find((c) => c.avatarId === avatarId)
@@ -302,6 +336,7 @@ router.post('/:id/avatars/select', async (req, res) => {
   }
 
   inf.heygenAvatarId = avatarId
+  if (voiceId) inf.heygenVoiceId = voiceId
   inf.selectedImageUrl = candidate.previewImageUrl ?? null
   inf.selectedPreviewVideoUrl = candidate.previewVideoUrl ?? null
   inf.status = 'complete'

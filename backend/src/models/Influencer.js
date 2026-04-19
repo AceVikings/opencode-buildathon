@@ -51,6 +51,8 @@ const influencerSchema = new Schema(
     avatarCandidates: [{ type: Object }],
     // The selected HeyGen look ID (passed as avatar_id to video generation)
     heygenAvatarId: { type: String, default: null },
+    // The selected voice ID (passed as voice_id to video generation)
+    heygenVoiceId: { type: String, default: null },
     // Preview image URL from HeyGen for the selected avatar
     selectedImageUrl: { type: String, default: null },
     // Preview video URL from HeyGen for the selected avatar
