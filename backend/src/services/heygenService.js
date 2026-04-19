@@ -9,8 +9,8 @@ const BASE = 'https://api.heygen.com'
 const headers = () => ({ 'x-api-key': HEYGEN_API_KEY, 'Content-Type': 'application/json' })
 
 const NUM_CANDIDATES = 4
-const AVATAR_POLL_INTERVAL_MS = 5_000
-const AVATAR_POLL_TIMEOUT_MS  = 120_000
+const AVATAR_POLL_INTERVAL_MS = 8_000   // check every 8 s
+const AVATAR_POLL_TIMEOUT_MS  = 10 * 60_000  // 10 min — prompt avatars can take several minutes
 
 // ── Default voice (lazy-loaded) ───────────────────────────────────────────────
 // Prompt-based avatars have no default voice, so we must always supply voice_id.

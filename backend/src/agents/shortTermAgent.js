@@ -570,8 +570,12 @@ ${postTypeInstruction}`
           xMediaId = await uploadVideoToX(accessToken, videoUrl)
           steps.push({ type: 'tool_result', tool: 'x_media_upload', content: `Uploaded, media_id=${xMediaId}` })
         } catch (uploadErr) {
-          console.warn(`[ShortTermAgent] X media upload failed, posting text only: ${uploadErr.message}`)
-          steps.push({ type: 'thought', tool: null, content: `Video upload to X failed (${uploadErr.message}) — posting text only. Video still saved in dashboard.` })
+          const isScopeError = uploadErr.message.includes('403') || uploadErr.message.includes('Forbidden')
+          const hint = isScopeError
+            ? 'Token missing media.write scope — reconnect X account to grant video upload permission.'
+            : uploadErr.message
+          console.warn(`[ShortTermAgent] X media upload failed, posting text only: ${hint}`)
+          steps.push({ type: 'thought', tool: null, content: `Video upload to X failed: ${hint} — posting text only. Video visible in dashboard.` })
           xMediaId = null
         }
       }

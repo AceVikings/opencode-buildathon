@@ -23,6 +23,7 @@ interface XStatus {
   connected: boolean
   xUsername?: string
   xName?: string
+  needsReconnect?: boolean
 }
 
 export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
@@ -362,12 +363,27 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
           {xLoading ? (
             <p className="font-inter text-[11px] text-warm-grey animate-pulse">Checking connection…</p>
           ) : xStatus?.connected ? (
-            <div className="flex items-center gap-2">
-              <div className="w-1.5 h-1.5 bg-gold flex-shrink-0" />
-              <p className="font-inter text-[12px] text-charcoal">
-                @{xStatus.xUsername}
-                {xStatus.xName && <span className="text-warm-grey ml-2">({xStatus.xName})</span>}
-              </p>
+            <div className="flex flex-col gap-2">
+              <div className="flex items-center gap-2">
+                <div className={`w-1.5 h-1.5 flex-shrink-0 ${xStatus.needsReconnect ? 'bg-gold animate-pulse' : 'bg-gold'}`} />
+                <p className="font-inter text-[12px] text-charcoal">
+                  @{xStatus.xUsername}
+                  {xStatus.xName && <span className="text-warm-grey ml-2">({xStatus.xName})</span>}
+                </p>
+              </div>
+              {xStatus.needsReconnect && (
+                <div className="flex items-start justify-between gap-3 bg-gold/5 border border-gold/30 px-3 py-2.5">
+                  <p className="font-inter text-[10px] text-charcoal leading-relaxed">
+                    Video posting requires updated permissions. Reconnect to enable video uploads to X.
+                  </p>
+                  <button
+                    onClick={handleConnectX}
+                    className="flex-shrink-0 font-inter text-[9px] uppercase tracking-[0.18em] text-gold hover:text-charcoal transition-colors whitespace-nowrap"
+                  >
+                    Reconnect →
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
             <div className="flex items-center justify-between gap-4">

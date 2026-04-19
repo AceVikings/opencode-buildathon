@@ -298,6 +298,7 @@ export async function getInfluencerXStatus(id: string): Promise<{
   xUserId?: string
   xUsername?: string
   xName?: string
+  needsReconnect?: boolean
 }> {
   const res = await apiFetch(`/influencers/${id}/x/status`)
   if (!res.ok) return { connected: false }

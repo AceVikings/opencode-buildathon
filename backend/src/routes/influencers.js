@@ -316,11 +316,16 @@ router.post('/:id/avatars/generate', async (req, res) => {
 
   const candidates = await generateAvatarCandidates(prompt, inf.name)
 
-  inf.avatarCandidates = candidates
-  inf.status = 'image_generated'
-  await inf.save()
+  // Use findByIdAndUpdate to avoid Mongoose VersionError — the request takes
+  // several minutes (HeyGen polling) and the document may have been touched elsewhere.
+  const updated = await Influencer.findByIdAndUpdate(
+    inf._id,
+    { avatarCandidates: candidates, status: 'image_generated',
+      ...(req.body.prompt ? { imagePrompt: req.body.prompt } : {}) },
+    { new: true }
+  )
 
-  return res.json({ candidates, influencer: inf })
+  return res.json({ candidates, influencer: updated })
 })
 
 /**
@@ -450,17 +455,35 @@ router.get('/:id/x/status', async (req, res) => {
 
   const conn = await XConnection.findById(inf.xConnectionId).lean()
   if (!conn) {
-    // stale reference — clean it up
     inf.xConnectionId = null
     await inf.save()
     return res.json({ connected: false })
   }
+
+  // Probe for media.write scope by attempting a minimal INIT (0 bytes).
+  // 403 = token lacks media.write; anything else = scope is present.
+  let needsReconnect = false
+  try {
+    const probeForm = new FormData()
+    probeForm.append('command', 'INIT')
+    probeForm.append('media_type', 'video/mp4')
+    probeForm.append('total_bytes', '1')
+    probeForm.append('media_category', 'tweet_video')
+    const probeRes = await fetch('https://api.x.com/2/media/upload', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${conn.accessToken}` },
+      body: probeForm,
+    })
+    // 400 = bad params but auth ok; 403 = forbidden (missing scope)
+    needsReconnect = probeRes.status === 403
+  } catch { /* network error — don't flag as needing reconnect */ }
 
   return res.json({
     connected: true,
     xUserId: conn.xUserId,
     xUsername: conn.xUsername,
     xName: conn.xName,
+    needsReconnect,
   })
 })
 
