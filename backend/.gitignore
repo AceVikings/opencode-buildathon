@@ -1,0 +1,18 @@
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.local
+
+# Firebase / GCP credentials — NEVER commit these
+gcp.json
+*.gcp.json
+service-account.json
+firebase-admin*.json
+firebase-service-account*.json
+*-service-account.json
+*-adminsdk-*.json
+*.serviceaccount.json
+*.key.json
+*.json.key

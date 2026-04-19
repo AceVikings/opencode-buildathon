@@ -1,0 +1,28 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# GCP / Firebase service account credentials — NEVER commit
+gcp.json
+*.gcp.json
+service-account.json
+firebase-admin*.json
+firebase-service-account*.json
+*-service-account.json
+*-adminsdk-*.json
+*.serviceaccount.json
+*.key.json
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Temp / generated scripts and their deps
+generate-media.js
+generate-media.mjs
+generate-media.ts
+node_modules/
+package.json
+package-lock.json
