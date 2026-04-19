@@ -23,7 +23,7 @@ const { HumanMessage } = require('@langchain/core/messages')
 
 // ── Model setup ──────────────────────────────────────────────────────────────
 
-function getLLM(modelName = 'gemini-2.0-flash') {
+function getLLM(modelName = 'gemini-3-flash-preview') {
   return new ChatGoogleGenerativeAI({
     model: modelName,
     apiKey: process.env.GEMINI_API_KEY,
@@ -60,7 +60,7 @@ async function runBrandIntelAgent(sources) {
 
   try {
     const tools = await mcpClient.getTools()
-    const agent = createReactAgent({ llm: getLLM('gemini-2.0-flash'), tools })
+    const agent = createReactAgent({ llm: getLLM('gemini-3-flash-preview'), tools })
 
     // Build the human message — instruct the agent to ingest each source
     const sourceInstructions = sources
@@ -114,7 +114,7 @@ After ingesting all sources, write the final Brand Brief in clear markdown.`
  * @returns {Promise<{ refinedBio: string, imagePrompt: string }>}
  */
 async function runPersonaAgent({ name, niche, bio, platforms = [], brandBrief, imagePrompt }) {
-  const llm = getLLM('gemini-2.0-flash')
+  const llm = getLLM('gemini-3-flash-preview')
 
   const prompt = `You are a creative director building an AI influencer persona.
 

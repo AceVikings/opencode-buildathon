@@ -12,12 +12,16 @@
  *
  *   GET  /api/twitter/callback
  *        X redirects here after user approves/denies.
- *        State encodes uid + influencerId.
+ *        State is a base64url-encoded JSON blob { nonce, uid, influencerId }.
  *        Stores tokens in XConnection, updates influencer.xConnectionId,
  *        then redirects browser back to the dashboard.
  *
  * All tweet-posting and disconnect operations live in influencers.js
- * under /api/influencers/:id/x/* so they stay co-located with the influencer resource.
+ * under /api/influencers/:id/x/*.
+ *
+ * Client type note:
+ *   - Confidential client (Web App / Automated App): has X_CLIENT_SECRET → use Basic Auth header
+ *   - Public client (Native App / SPA): no secret → send client_id in body only
  */
 
 const { Router } = require('express')
@@ -31,23 +35,23 @@ const router = Router()
 
 // ── Env vars ──────────────────────────────────────────────────────────────────
 const CLIENT_ID = process.env.X_CLIENT_ID
-const CLIENT_SECRET = process.env.X_CLIENT_SECRET
+const CLIENT_SECRET = process.env.X_CLIENT_SECRET  // undefined for public clients
 const CALLBACK_URL = process.env.X_CALLBACK_URL
 
-if (!CLIENT_ID) console.warn('[twitter] X_CLIENT_ID not set')
-if (!CLIENT_SECRET) console.warn('[twitter] X_CLIENT_SECRET not set')
-if (!CALLBACK_URL) console.warn('[twitter] X_CALLBACK_URL not set')
+if (!CLIENT_ID) console.warn('[twitter] X_CLIENT_ID not set — OAuth will fail')
+if (!CALLBACK_URL) console.warn('[twitter] X_CALLBACK_URL not set — OAuth will fail')
+if (!CLIENT_SECRET) console.warn('[twitter] X_CLIENT_SECRET not set — assuming public client (no Basic Auth)')
 
 // ── X API endpoints ────────────────────────────────────────────────────────────
 const X_AUTH_URL = 'https://x.com/i/oauth2/authorize'
 const X_TOKEN_URL = 'https://api.x.com/2/oauth2/token'
 const X_ME_URL = 'https://api.x.com/2/users/me'
 
-// tweet.read + tweet.write + users.read (to fetch profile) + offline.access (refresh tokens)
+// Required scopes for posting
 const SCOPES = 'tweet.read tweet.write users.read offline.access'
 
-// ── In-memory PKCE store: uid → { codeVerifier, state, influencerId } ─────────
-// Production: replace with Redis or a short-TTL DB collection.
+// ── In-memory PKCE store: storeKey → { codeVerifier, nonce } ─────────────────
+// Key = `${uid}:${influencerId}`.  Replace with Redis in production.
 const pkceStore = new Map()
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -56,12 +60,50 @@ function randomBase64url(bytes = 32) {
   return crypto.randomBytes(bytes).toString('base64url')
 }
 
-function pkceChallenge(verifier) {
+function pkceS256Challenge(verifier) {
   return crypto.createHash('sha256').update(verifier).digest('base64url')
 }
 
-function basicAuthHeader() {
-  return 'Basic ' + Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64')
+/**
+ * Encode state as base64url JSON so it survives URL round-trips without
+ * any ambiguity regardless of characters in uid/influencerId.
+ */
+function encodeState(payload) {
+  return Buffer.from(JSON.stringify(payload)).toString('base64url')
+}
+
+function decodeState(raw) {
+  try {
+    return JSON.parse(Buffer.from(raw, 'base64url').toString('utf8'))
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Build the Authorization header for the token endpoint.
+ * Confidential clients (have a secret) → Basic Auth.
+ * Public clients (no secret) → no Auth header; client_id goes in body.
+ */
+function tokenAuthHeaders() {
+  if (CLIENT_SECRET) {
+    return {
+      'Content-Type': 'application/x-www-form-urlencoded',
+      Authorization: 'Basic ' + Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64'),
+    }
+  }
+  return { 'Content-Type': 'application/x-www-form-urlencoded' }
+}
+
+/**
+ * Add client_id to the token body params if this is a public client.
+ * Confidential clients must NOT put client_id in the body when using Basic Auth
+ * per RFC 6749 §2.3.1.
+ */
+function addClientIdIfPublic(params) {
+  if (!CLIENT_SECRET) {
+    params.append('client_id', CLIENT_ID)
+  }
 }
 
 // ── Routes ────────────────────────────────────────────────────────────────────
@@ -83,11 +125,13 @@ router.get('/connect/:influencerId', authenticate, async (req, res) => {
   if (inf.uid !== uid) return res.status(403).json({ error: 'Forbidden' })
 
   const codeVerifier = randomBase64url(32)
-  const codeChallenge = pkceChallenge(codeVerifier)
-  // State encodes a random nonce + uid + influencerId, dot-separated
-  const state = `${randomBase64url(12)}.${uid}.${influencerId}`
+  const codeChallenge = pkceS256Challenge(codeVerifier)
+  const nonce = randomBase64url(16)
 
-  pkceStore.set(`${uid}:${influencerId}`, { codeVerifier, state })
+  // State is opaque to X — encode as base64url JSON
+  const state = encodeState({ nonce, uid, influencerId })
+
+  pkceStore.set(`${uid}:${influencerId}`, { codeVerifier, nonce })
 
   const params = new URLSearchParams({
     response_type: 'code',
@@ -99,6 +143,7 @@ router.get('/connect/:influencerId', authenticate, async (req, res) => {
     code_challenge_method: 'S256',
   })
 
+  console.log(`[twitter] /connect — influencer=${influencerId} uid=${uid}`)
   res.json({ authUrl: `${X_AUTH_URL}?${params.toString()}` })
 })
 
@@ -106,39 +151,50 @@ router.get('/connect/:influencerId', authenticate, async (req, res) => {
  * GET /api/twitter/callback
  *
  * X redirects here after the user approves or denies the app.
- * No Firebase auth here — the user's uid is decoded from `state`.
+ * No Firebase auth — uid is decoded from the opaque state blob.
  */
 router.get('/callback', async (req, res) => {
   const FRONTEND = process.env.FRONTEND_URL ?? 'http://localhost:5173'
   const { code, state, error } = req.query
 
+  console.log('[twitter] /callback received', { code: !!code, state: !!state, error })
+
   if (error) {
+    console.warn('[twitter] user denied access:', error)
     return res.redirect(`${FRONTEND}/dashboard?x_error=${encodeURIComponent(String(error))}`)
   }
 
   if (!code || !state) {
-    return res.status(400).json({ error: 'Missing code or state' })
+    console.error('[twitter] callback missing code or state')
+    return res.redirect(`${FRONTEND}/dashboard?x_error=missing_params`)
   }
 
-  // state = "<nonce>.<uid>.<influencerId>"
-  const parts = String(state).split('.')
-  if (parts.length < 3) {
-    return res.status(400).json({ error: 'Malformed state' })
+  // Decode the opaque state blob
+  const stateData = decodeState(String(state))
+  if (!stateData || !stateData.uid || !stateData.influencerId || !stateData.nonce) {
+    console.error('[twitter] could not decode state:', String(state).slice(0, 80))
+    return res.redirect(`${FRONTEND}/dashboard?x_error=invalid_state`)
   }
-  // nonce is first segment, uid is second, influencerId is everything after (base64url ids don't contain dots)
-  const uid = parts[1]
-  const influencerId = parts[2]
 
+  const { uid, influencerId, nonce } = stateData
   const storeKey = `${uid}:${influencerId}`
   const pending = pkceStore.get(storeKey)
 
-  if (!pending || pending.state !== String(state)) {
-    return res.status(400).json({ error: 'State mismatch — possible CSRF' })
+  if (!pending) {
+    console.error('[twitter] no pending PKCE entry for', storeKey)
+    return res.redirect(`${FRONTEND}/dashboard?x_error=state_not_found`)
   }
+
+  if (pending.nonce !== nonce) {
+    console.error('[twitter] nonce mismatch — possible CSRF')
+    pkceStore.delete(storeKey)
+    return res.redirect(`${FRONTEND}/dashboard?x_error=state_mismatch`)
+  }
+
   pkceStore.delete(storeKey)
 
   try {
-    // Exchange code for tokens
+    // ── Step 3: Exchange auth code for tokens ──────────────────────────────
     const tokenParams = new URLSearchParams({
       grant_type: 'authorization_code',
       code: String(code),
@@ -146,27 +202,34 @@ router.get('/callback', async (req, res) => {
       code_verifier: pending.codeVerifier,
     })
 
-    const { data: tokenData } = await axios.post(X_TOKEN_URL, tokenParams.toString(), {
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Authorization: basicAuthHeader(),
-      },
+    // Public clients must include client_id in body; confidential use Basic Auth
+    addClientIdIfPublic(tokenParams)
+
+    console.log('[twitter] exchanging code for tokens…')
+
+    const tokenResponse = await axios.post(X_TOKEN_URL, tokenParams.toString(), {
+      headers: tokenAuthHeaders(),
     })
 
+    const tokenData = tokenResponse.data
     const accessToken = tokenData.access_token
     const refreshToken = tokenData.refresh_token ?? null
     const tokenExpiresAt = tokenData.expires_in
       ? Date.now() + tokenData.expires_in * 1000
       : null
 
-    // Fetch X user profile
-    const { data: meData } = await axios.get(
+    console.log('[twitter] token exchange OK, fetching X user profile…')
+
+    // ── Step 4: Fetch the X user's profile ────────────────────────────────
+    const meResponse = await axios.get(
       `${X_ME_URL}?user.fields=name,username`,
       { headers: { Authorization: `Bearer ${accessToken}` } }
     )
-    const xUser = meData.data
+    const xUser = meResponse.data.data
 
-    // Upsert the XConnection for this influencer
+    console.log(`[twitter] connected X user @${xUser.username} (${xUser.id}) → influencer ${influencerId}`)
+
+    // ── Upsert XConnection scoped to this influencer ───────────────────────
     const conn = await XConnection.findOneAndUpdate(
       { influencerId },
       {
@@ -182,15 +245,16 @@ router.get('/callback', async (req, res) => {
       { upsert: true, new: true }
     )
 
-    // Stamp the influencer with this connection ID
+    // Stamp the influencer document
     await Influencer.findByIdAndUpdate(influencerId, {
       xConnectionId: conn._id.toString(),
     })
 
-    res.redirect(`${FRONTEND}/dashboard?x_connected=true&inf=${influencerId}`)
+    return res.redirect(`${FRONTEND}/dashboard?x_connected=true&inf=${influencerId}`)
   } catch (err) {
-    console.error('[twitter] callback error:', err?.response?.data ?? err.message)
-    res.redirect(`${FRONTEND}/dashboard?x_error=token_exchange_failed`)
+    const xErr = err?.response?.data
+    console.error('[twitter] callback error:', JSON.stringify(xErr ?? err.message))
+    return res.redirect(`${FRONTEND}/dashboard?x_error=token_exchange_failed`)
   }
 })
 
