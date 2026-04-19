@@ -224,6 +224,52 @@ export async function deleteInfluencer(id: string): Promise<{ deleted: boolean }
   return res.json()
 }
 
+// ── Post analytics ───────────────────────────────────────────────────────────
+
+export interface PostMetrics {
+  impressions: number | null
+  engagements: number | null
+  likes: number | null
+  retweets: number | null
+  replies: number | null
+  quote_tweets: number | null
+  bookmarks: number | null
+  url_clicks: number | null
+  user_profile_clicks: number | null
+  detail_expands: number | null
+  follows: number | null
+}
+
+export interface XPostRecord {
+  tweetId: string
+  text: string
+  postedAt: string
+  metricsUpdatedAt: string | null
+  metrics: PostMetrics
+}
+
+export interface AnalyticsResponse {
+  postCount: number
+  metricsUpdatedAt: string | null
+  totals: PostMetrics
+  posts: XPostRecord[]
+}
+
+export async function getPostAnalytics(influencerId: string): Promise<AnalyticsResponse> {
+  const res = await apiFetch(`/influencers/${influencerId}/x/analytics`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error((err as { error?: string }).error ?? 'Failed to fetch analytics')
+  }
+  return res.json()
+}
+
+export async function getInfluencerPosts(influencerId: string): Promise<{ posts: XPostRecord[] }> {
+  const res = await apiFetch(`/influencers/${influencerId}/x/posts`)
+  if (!res.ok) throw new Error('Failed to fetch posts')
+  return res.json()
+}
+
 // ── X Trends ─────────────────────────────────────────────────────────────────
 
 export interface Trend {

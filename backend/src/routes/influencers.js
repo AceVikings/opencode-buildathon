@@ -25,8 +25,12 @@
  *
  * ── X account (per-influencer) ────────────────────────────────────────────────
  * GET    /api/influencers/:id/x/status      Get X connection status for this influencer
- * POST   /api/influencers/:id/x/post        Post a tweet as this influencer
+ * POST   /api/influencers/:id/x/post        Post a tweet as this influencer (saves XPost record)
  * DELETE /api/influencers/:id/x/disconnect  Revoke + remove X connection for this influencer
+ *
+ * ── Post analytics ────────────────────────────────────────────────────────────
+ * GET    /api/influencers/:id/x/posts       List all XPost records for this influencer
+ * GET    /api/influencers/:id/x/analytics   Aggregate metrics summary across all posts
  */
 
 const { Router } = require('express')
@@ -35,6 +39,7 @@ const axios = require('axios')
 const { authenticate } = require('../middleware/auth')
 const Influencer = require('../models/Influencer')
 const XConnection = require('../models/XConnection')
+const XPost = require('../models/XPost')
 const { runBrandIntelAgent, runPersonaAgent } = require('../agents/influencerAgent')
 const { generateInfluencerImages } = require('../services/imageGen')
 const { uploadFile, getSignedUrl, bucket } = require('../config/storage')
@@ -425,7 +430,18 @@ router.post('/:id/x/post', async (req, res) => {
     }
   )
 
-  return res.status(201).json({ tweet: tweetData.data })
+  const tweet = tweetData.data
+
+  // Persist the post so analytics can be tracked
+  await XPost.create({
+    influencerId: inf._id.toString(),
+    uid: req.user.uid,
+    tweetId: tweet.id,
+    text: tweet.text ?? text.trim(),
+    postedAt: new Date(),
+  })
+
+  return res.status(201).json({ tweet })
 })
 
 // DELETE /api/influencers/:id/x/disconnect — revoke token + remove connection
@@ -458,6 +474,62 @@ router.delete('/:id/x/disconnect', async (req, res) => {
   }
 
   return res.json({ disconnected: true })
+})
+
+// ── Post list & analytics ─────────────────────────────────────────────────────
+
+/**
+ * GET /api/influencers/:id/x/posts
+ * Returns all XPost records for this influencer, newest first.
+ */
+router.get('/:id/x/posts', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  const posts = await XPost.find({ influencerId: inf._id.toString() })
+    .sort({ postedAt: -1 })
+    .lean()
+
+  return res.json({ posts })
+})
+
+/**
+ * GET /api/influencers/:id/x/analytics
+ * Returns per-post metrics and aggregate totals across all posts.
+ */
+router.get('/:id/x/analytics', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  const posts = await XPost.find({ influencerId: inf._id.toString() })
+    .sort({ postedAt: -1 })
+    .lean()
+
+  // Aggregate totals — sum all non-null metric values
+  const METRIC_KEYS = [
+    'impressions', 'engagements', 'likes', 'retweets', 'replies',
+    'quote_tweets', 'bookmarks', 'url_clicks', 'user_profile_clicks',
+    'detail_expands', 'follows',
+  ]
+
+  const totals = {}
+  for (const key of METRIC_KEYS) {
+    const values = posts.map((p) => p.metrics?.[key]).filter((v) => v !== null && v !== undefined)
+    totals[key] = values.length > 0 ? values.reduce((a, b) => a + b, 0) : null
+  }
+
+  return res.json({
+    postCount: posts.length,
+    metricsUpdatedAt: posts[0]?.metricsUpdatedAt ?? null,
+    totals,
+    posts: posts.map((p) => ({
+      tweetId: p.tweetId,
+      text: p.text,
+      postedAt: p.postedAt,
+      metricsUpdatedAt: p.metricsUpdatedAt,
+      metrics: p.metrics,
+    })),
+  })
 })
 
 module.exports = router

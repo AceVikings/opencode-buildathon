@@ -3,6 +3,7 @@ import type { Influencer } from '../../lib/api'
 import { createInfluencer, updatePersona } from '../../lib/api'
 
 const PLATFORMS = ['X', 'Instagram', 'TikTok', 'YouTube', 'LinkedIn', 'Threads']
+const X_ONLY_LIVE = new Set(['X'])
 
 interface Props {
   influencer: Influencer | null
@@ -125,18 +126,27 @@ export function Step1Persona({ influencer, onSaved }: Props) {
         <div className="flex flex-wrap gap-2">
           {PLATFORMS.map((p) => {
             const active = platforms.includes(p)
+            const isLive = X_ONLY_LIVE.has(p)
             return (
               <button
                 key={p}
                 type="button"
-                onClick={() => togglePlatform(p)}
-                className={`font-inter text-[10px] uppercase tracking-[0.18em] px-4 py-2 border transition-colors duration-200 ${
-                  active
+                onClick={() => isLive ? togglePlatform(p) : undefined}
+                disabled={!isLive}
+                className={`relative inline-flex items-center gap-2 font-inter text-[10px] uppercase tracking-[0.18em] px-4 py-2 border transition-colors duration-200 ${
+                  !isLive
+                    ? 'opacity-50 cursor-not-allowed bg-transparent text-warm-grey/60 border-charcoal/10'
+                    : active
                     ? 'bg-charcoal text-white border-charcoal'
                     : 'bg-transparent text-warm-grey border-charcoal/20 hover:border-charcoal/50'
                 }`}
               >
                 {p}
+                {!isLive && (
+                  <span className="font-inter text-[7px] uppercase tracking-[0.15em] bg-warm-grey/20 text-warm-grey/70 px-1.5 py-0.5 leading-none">
+                    Soon
+                  </span>
+                )}
               </button>
             )
           })}

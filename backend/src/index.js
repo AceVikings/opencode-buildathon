@@ -10,6 +10,8 @@ const router = require('./routes/index')
 require('./config/firebase')
 require('./config/storage')
 
+const { startAnalyticsPoller } = require('./jobs/analyticsPoller')
+
 const PORT = process.env.PORT ?? 3000
 
 const app = express()
@@ -41,6 +43,7 @@ async function start() {
   app.listen(PORT, () => {
     console.log(`Server listening on http://localhost:${PORT}`)
   })
+  startAnalyticsPoller()
 }
 
 start().catch(err => {
