@@ -75,7 +75,7 @@ export function Hero() {
               <img
                 src={heroImg}
                 alt="Loque AI Influencer Platform"
-                className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-[filter,transform] duration-[1500ms] ease-out group-hover:scale-[1.02] origin-center"
+                className="w-full h-full object-cover grayscale group-hover:grayscale-0 transition-[filter] duration-[1500ms] ease-out"
                 style={{ transitionTimingFunction: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)' }}
               />
               {/* Inner border for depth */}
