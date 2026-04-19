@@ -1,31 +1,38 @@
 /**
- * Influencer Brand Intelligence Agent
+ * Influencer Brand Intelligence — orchestrator
  *
- * Two-agent pipeline:
- *  1. BrandIntelAgent — LangChain ReAct agent with three inline tools:
- *       • fetch_url        : fetch + scrape a public webpage with axios + cheerio
- *       • parse_pdf        : extract text from a base64-encoded PDF with pdf-parse
- *       • ingest_text      : pass raw text through verbatim
- *     Synthesises all sources into a structured brand brief.
+ * Pipeline:
+ *  1. BrandIntelAgent (this file)
+ *     For each brand source, spawns scrapeWorker.js as a child process.
+ *     All workers run in parallel — one process per source.
+ *     Each worker receives its source via stdin JSON and returns extracted
+ *     text via stdout JSON, then exits.
+ *     The orchestrator collects all results and feeds the combined text to
+ *     the LLM to synthesise a Brand Brief.
  *
- *  2. PersonaAgent — direct LLM call (no tools) that refines bio + writes
- *     an image-generation prompt from the brand brief + persona fields.
+ *  2. PersonaAgent
+ *     Direct LLM call — takes the brand brief + persona fields and returns
+ *     a refined bio and a portrait image-generation prompt.
  *
- * Why no MCP / subprocess:
- *   The original code spawned brandIntelServer.js via stdio which requires
- *   @modelcontextprotocol/sdk (not in package.json) and a fragile child-process
- *   lifecycle. Defining the tools inline with DynamicStructuredTool is simpler,
- *   faster, and avoids all those issues.
+ * Architecture:
+ *   ┌─ orchestrator (this process) ─────────────────────────────────┐
+ *   │                                                               │
+ *   │  sources[]  ──fork──▶  scrapeWorker (url)   ──▶  text        │
+ *   │             ──fork──▶  scrapeWorker (pdf)   ──▶  text        │
+ *   │             ──fork──▶  scrapeWorker (text)  ──▶  text        │
+ *   │                                   ▼                          │
+ *   │                         collect all texts                    │
+ *   │                                   ▼                          │
+ *   │                         LLM → Brand Brief                    │
+ *   └───────────────────────────────────────────────────────────────┘
  */
 
-const axios = require('axios')
-const cheerio = require('cheerio')
-const pdfParse = require('pdf-parse')
-const { z } = require('zod')
-const { DynamicStructuredTool } = require('@langchain/core/tools')
-const { createReactAgent } = require('@langchain/langgraph/prebuilt')
+const path = require('path')
+const { spawn } = require('child_process')
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai')
 const { HumanMessage } = require('@langchain/core/messages')
+
+const WORKER_PATH = path.resolve(__dirname, 'scrapeWorker.js')
 
 // ── Model factory ─────────────────────────────────────────────────────────────
 
@@ -37,81 +44,71 @@ function getLLM(model = 'gemini-3-flash-preview') {
   })
 }
 
-// ── Inline tools ──────────────────────────────────────────────────────────────
+// ── Subagent spawner ──────────────────────────────────────────────────────────
 
-/** Strip HTML noise and return up to 20,000 chars of readable text */
-function scrapeHtml(html) {
-  const $ = cheerio.load(html)
-  $('script,style,nav,footer,header,iframe,noscript,[role="navigation"]').remove()
-  return $('body').text().replace(/\s+/g, ' ').trim().slice(0, 20000)
+/**
+ * Spawn scrapeWorker.js as a child process for a single source.
+ * Sends the source as a JSON line on stdin, reads the result from stdout.
+ *
+ * @param {{ type: string, content: string, label?: string }} source
+ * @param {number} timeoutMs  Max ms to wait for the worker (default 20 s)
+ * @returns {Promise<{ ok: boolean, label: string, text?: string, error?: string }>}
+ */
+function spawnScrapeWorker(source, timeoutMs = 20000) {
+  return new Promise((resolve) => {
+    const worker = spawn(process.execPath, [WORKER_PATH], {
+      stdio: ['pipe', 'pipe', 'pipe'],
+    })
+
+    let stdout = ''
+    let stderr = ''
+    let settled = false
+
+    const settle = (result) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolve(result)
+    }
+
+    const timer = setTimeout(() => {
+      worker.kill('SIGTERM')
+      settle({ ok: false, label: source.label || source.type, error: 'Worker timed out' })
+    }, timeoutMs)
+
+    worker.stdout.on('data', (d) => { stdout += d.toString() })
+    worker.stderr.on('data', (d) => { stderr += d.toString() })
+
+    worker.on('close', (code) => {
+      if (stderr.trim()) {
+        console.warn(`[scrapeWorker:${source.label || source.type}] stderr:`, stderr.trim())
+      }
+      try {
+        const result = JSON.parse(stdout.trim())
+        settle(result)
+      } catch {
+        settle({
+          ok: false,
+          label: source.label || source.type,
+          error: `Worker exited (${code}) with unparseable output: ${stdout.slice(0, 200)}`,
+        })
+      }
+    })
+
+    worker.on('error', (err) => {
+      settle({ ok: false, label: source.label || source.type, error: err.message })
+    })
+
+    // Send source to worker via stdin
+    worker.stdin.write(JSON.stringify(source) + '\n')
+    worker.stdin.end()
+  })
 }
-
-const fetchUrlTool = new DynamicStructuredTool({
-  name: 'fetch_url',
-  description: 'Fetch a public URL and return the main text content (up to 20,000 chars). Use this to ingest a brand website or any online document.',
-  schema: z.object({
-    url: z.string().url().describe('Full HTTP/HTTPS URL to fetch'),
-  }),
-  func: async ({ url }) => {
-    try {
-      const resp = await axios.get(url, {
-        timeout: 15000,
-        maxContentLength: 5 * 1024 * 1024,
-        headers: {
-          'User-Agent': 'LoqueBot/1.0 (brand intelligence)',
-          Accept: 'text/html,application/xhtml+xml,text/plain',
-        },
-        // Follow redirects
-        maxRedirects: 5,
-      })
-      const ct = resp.headers['content-type'] ?? ''
-      if (ct.includes('html')) return scrapeHtml(resp.data)
-      if (typeof resp.data === 'string') return resp.data.slice(0, 20000)
-      return JSON.stringify(resp.data).slice(0, 20000)
-    } catch (err) {
-      return `Error fetching ${url}: ${err.message}`
-    }
-  },
-})
-
-const parsePdfTool = new DynamicStructuredTool({
-  name: 'parse_pdf',
-  description: 'Extract text from a base64-encoded PDF and return up to 30,000 chars.',
-  schema: z.object({
-    base64Pdf: z.string().describe('Base64-encoded PDF file content'),
-    filename: z.string().optional().describe('Original filename for context'),
-  }),
-  func: async ({ base64Pdf, filename }) => {
-    try {
-      const buffer = Buffer.from(base64Pdf, 'base64')
-      const result = await pdfParse(buffer)
-      const text = (result.text ?? '').trim().slice(0, 30000)
-      return text || `No text found in PDF${filename ? ` (${filename})` : ''}.`
-    } catch (err) {
-      return `PDF parse error${filename ? ` for ${filename}` : ''}: ${err.message}`
-    }
-  },
-})
-
-const ingestTextTool = new DynamicStructuredTool({
-  name: 'ingest_text',
-  description: 'Accept raw text (brand copy, guidelines, etc.) and return it cleaned.',
-  schema: z.object({
-    text: z.string().min(1).describe('Raw text to ingest'),
-    label: z.string().optional().describe('Short label for this text chunk'),
-  }),
-  func: async ({ text, label }) => {
-    const cleaned = text.replace(/\s+/g, ' ').trim().slice(0, 10000)
-    return `[${label ?? 'Manual text'}]\n${cleaned}`
-  },
-})
-
-const brandTools = [fetchUrlTool, parsePdfTool, ingestTextTool]
 
 // ── Agent 1: Brand Intelligence ───────────────────────────────────────────────
 
 /**
- * Ingest all brand sources and synthesise them into a brand brief.
+ * Spawn one subagent per source in parallel, collect results, synthesise brief.
  *
  * @param {Array<{ type: 'text'|'pdf'|'url', content: string, label?: string }>} sources
  * @returns {Promise<string>} Markdown brand brief
@@ -119,19 +116,37 @@ const brandTools = [fetchUrlTool, parsePdfTool, ingestTextTool]
 async function runBrandIntelAgent(sources) {
   if (!sources || sources.length === 0) return 'No brand sources provided.'
 
-  const agent = createReactAgent({ llm: getLLM(), tools: brandTools })
+  console.log(`[BrandIntelAgent] Spawning ${sources.length} scrape worker(s)…`)
 
-  const sourceInstructions = sources.map((s, i) => {
-    if (s.type === 'url') {
-      return `Source ${i + 1} (URL): use fetch_url to retrieve: ${s.content}`
-    }
-    if (s.type === 'pdf') {
-      return `Source ${i + 1} (PDF "${s.label ?? 'document'}"): use parse_pdf with base64Pdf="${s.content.slice(0, 60)}…" and filename="${s.label ?? 'document.pdf'}"`
-    }
-    return `Source ${i + 1} (text "${s.label ?? 'manual'}"): use ingest_text with this content:\n${s.content}`
-  }).join('\n\n')
+  // Spawn all workers concurrently
+  const results = await Promise.all(sources.map((s) => spawnScrapeWorker(s)))
 
-  const prompt = `You are a brand analyst. Ingest the following brand sources using the available tools, then write a comprehensive Brand Brief covering:
+  // Log outcomes
+  results.forEach((r) => {
+    if (r.ok) {
+      console.log(`[BrandIntelAgent] ✓ ${r.label} — ${(r.text ?? '').length} chars`)
+    } else {
+      console.warn(`[BrandIntelAgent] ✗ ${r.label} — ${r.error}`)
+    }
+  })
+
+  const successful = results.filter((r) => r.ok && r.text)
+  if (successful.length === 0) {
+    return 'All brand sources failed to load. Cannot generate brief.'
+  }
+
+  // Combine extracted texts for the LLM
+  const combinedText = successful
+    .map((r) => `### Source: ${r.label}\n\n${r.text}`)
+    .join('\n\n---\n\n')
+
+  const llm = getLLM()
+
+  const prompt = `You are a brand analyst. Below is the extracted content from ${successful.length} brand source(s).
+
+${combinedText}
+
+Based solely on the above content, write a comprehensive Brand Brief in clear markdown covering:
 - Brand name & positioning
 - Target audience
 - Brand voice & tone
@@ -139,14 +154,10 @@ async function runBrandIntelAgent(sources) {
 - Visual aesthetic & style guidelines
 - Core values & messaging pillars
 
-Sources:
-${sourceInstructions}
+Be specific and draw directly from the provided content.`
 
-After processing all sources, output the final Brand Brief in clear markdown.`
-
-  const result = await agent.invoke({ messages: [new HumanMessage(prompt)] })
-  const last = result.messages[result.messages.length - 1]
-  return typeof last.content === 'string' ? last.content : JSON.stringify(last.content)
+  const response = await llm.invoke([new HumanMessage(prompt)])
+  return typeof response.content === 'string' ? response.content : JSON.stringify(response.content)
 }
 
 // ── Agent 2: Persona ──────────────────────────────────────────────────────────
