@@ -5,34 +5,37 @@ import { HomePage } from './components/HomePage'
 import { WaitlistPage } from './components/WaitlistPage'
 import { DashboardPage } from './components/DashboardPage'
 
-const IS_DEV = import.meta.env.DEV
+const Spinner = () => (
+  <div className="min-h-screen bg-alabaster flex items-center justify-center">
+    <span className="font-playfair text-2xl tracking-[0.18em] uppercase text-charcoal animate-pulse">
+      Loque
+    </span>
+  </div>
+)
 
 /** Route that requires auth. Redirects to /auth while loading or unauthenticated. */
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-alabaster flex items-center justify-center">
-        <span className="font-playfair text-2xl tracking-[0.18em] uppercase text-charcoal animate-pulse">
-          Loque
-        </span>
-      </div>
-    )
-  }
-
+  if (loading) return <Spinner />
   return user ? <>{children}</> : <Navigate to="/auth" replace />
 }
 
+/** Redirect already-authenticated users away from public-only routes (/ and /auth). */
+function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
+  const { user, loading } = useAuth()
+  if (loading) return <Spinner />
+  return user ? <Navigate to="/dashboard" replace /> : <>{children}</>
+}
+
 /** Where authenticated users land after sign-in/sign-up. */
-const APP_HOME = IS_DEV ? '/dashboard' : '/waitlist'
+const APP_HOME = '/dashboard'
 
 function App() {
   return (
     <Routes>
-      {/* Public */}
-      <Route path="/" element={<HomePage />} />
-      <Route path="/auth" element={<AuthPage />} />
+      {/* Public — redirect to dashboard if already signed in */}
+      <Route path="/" element={<PublicOnlyRoute><HomePage /></PublicOnlyRoute>} />
+      <Route path="/auth" element={<PublicOnlyRoute><AuthPage /></PublicOnlyRoute>} />
 
       {/* Authenticated */}
       <Route

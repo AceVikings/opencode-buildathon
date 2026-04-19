@@ -17,11 +17,13 @@
  * POST   /api/influencers/:id/brand/analyse Run brand intelligence agent → brand brief
  * DELETE /api/influencers/:id/brand/:srcId  Remove a brand source
  *
- * ── Image generation ─────────────────────────────────────────────────────────
- * POST   /api/influencers/:id/images/generate  Generate 4 candidate images via Gemini
- * POST   /api/influencers/:id/images/select    Select one candidate
- * POST   /api/influencers/:id/images/upload    Upload a custom image directly
- * GET    /api/influencers/:id/images/url       Get a fresh signed URL for the selected image
+ * ── Avatar generation (HeyGen) ───────────────────────────────────────────────
+ * POST   /api/influencers/:id/avatars/generate  Generate 4 HeyGen prompt-avatars
+ * POST   /api/influencers/:id/avatars/select    Select one candidate avatar
+ *
+ * ── UGC / Video generation (HeyGen) ──────────────────────────────────────────
+ * POST   /api/influencers/:id/videos/generate   Start a HeyGen video (returns videoId)
+ * GET    /api/influencers/:id/videos/:videoId   Poll video status from HeyGen
  *
  * ── X account (per-influencer) ────────────────────────────────────────────────
  * GET    /api/influencers/:id/x/status      Get X connection status for this influencer
@@ -41,8 +43,8 @@ const Influencer = require('../models/Influencer')
 const XConnection = require('../models/XConnection')
 const XPost = require('../models/XPost')
 const { runBrandIntelAgent, runPersonaAgent } = require('../agents/influencerAgent')
-const { generateInfluencerImages } = require('../services/imageGen')
-const { uploadFile, getSignedUrl, bucket } = require('../config/storage')
+const { generateAvatarCandidates, createVideo, getVideoStatus } = require('../services/heygenService')
+const { uploadFile, getSignedUrl } = require('../config/storage')
 
 const router = Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } })

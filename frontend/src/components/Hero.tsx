@@ -1,7 +1,9 @@
 import { Link } from 'react-router-dom'
 import heroImg from '../assets/hero.png'
+import { useAuth } from '../contexts/AuthContext'
 
 export function Hero() {
+  const { user } = useAuth()
   return (
     <section className="relative min-h-screen bg-alabaster flex flex-col">
 
@@ -39,7 +41,7 @@ export function Hero() {
           {/* CTAs */}
           <div className="flex flex-col sm:flex-row gap-4">
             <Link
-              to="/auth"
+              to={user ? '/dashboard' : '/auth'}
               className="group relative overflow-hidden inline-flex items-center justify-center h-13 px-10 bg-charcoal text-white font-inter text-xs uppercase tracking-[0.22em] font-medium shadow-[0_4px_16px_rgba(0,0,0,0.15)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.25)] transition-shadow duration-500"
             >
               <span
@@ -47,7 +49,7 @@ export function Hero() {
                 style={{ transitionTimingFunction: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)' }}
                 aria-hidden="true"
               />
-              <span className="relative z-10">Create Your Fleet</span>
+              <span className="relative z-10">{user ? 'Go to Dashboard' : 'Create Your Fleet'}</span>
             </Link>
             <a
               href="#platform"

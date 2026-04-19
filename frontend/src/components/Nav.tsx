@@ -1,9 +1,11 @@
 import { useState, useEffect } from 'react'
 import { Link } from 'react-router-dom'
+import { useAuth } from '../contexts/AuthContext'
 
 const NAV_LINKS = ['Platform', 'Influencers', 'Pricing', 'Studio'] as const
 
 export function Nav() {
+  const { user } = useAuth()
   const [scrolled, setScrolled] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
 
@@ -47,7 +49,7 @@ export function Nav() {
 
         {/* ── Desktop CTA ── */}
         <Link
-          to="/auth"
+          to={user ? '/dashboard' : '/auth'}
           className="hidden lg:inline-flex items-center gap-3 group relative overflow-hidden h-10 px-7 bg-charcoal text-white font-inter text-[10px] uppercase tracking-[0.22em] font-medium shadow-[0_4px_16px_rgba(0,0,0,0.15)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.25)] transition-shadow duration-500"
         >
           <span
@@ -55,7 +57,7 @@ export function Nav() {
             style={{ transitionTimingFunction: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)' }}
             aria-hidden="true"
           />
-          <span className="relative z-10">Get Started</span>
+          <span className="relative z-10">{user ? 'Dashboard' : 'Get Started'}</span>
         </Link>
 
         {/* ── Mobile toggle ── */}
@@ -82,7 +84,7 @@ export function Nav() {
             </a>
           ))}
           <Link
-            to="/auth"
+            to={user ? '/dashboard' : '/auth'}
             className="inline-flex items-center justify-center group relative overflow-hidden h-11 px-8 bg-charcoal text-white font-inter text-[10px] uppercase tracking-[0.22em] font-medium mt-2"
             onClick={() => setMenuOpen(false)}
           >
@@ -90,7 +92,7 @@ export function Nav() {
               className="absolute inset-0 bg-gold -translate-x-full group-hover:translate-x-0 transition-transform duration-500"
               aria-hidden="true"
             />
-            <span className="relative z-10">Get Started</span>
+            <span className="relative z-10">{user ? 'Dashboard' : 'Get Started'}</span>
           </Link>
         </div>
       )}
