@@ -189,7 +189,7 @@ export async function analyseBrand(id: string): Promise<{
   return res.json()
 }
 
-// ── HeyGen Avatar generation ──────────────────────────────────────────────────
+// ── Avatar generation ─────────────────────────────────────────────────────────
 
 export async function generateAvatars(id: string, prompt?: string): Promise<{
   candidates: AvatarCandidate[]
@@ -222,7 +222,7 @@ export async function selectAvatar(id: string, avatarId: string): Promise<{
   return res.json()
 }
 
-// ── HeyGen Video / UGC generation ─────────────────────────────────────────────
+// ── Video / UGC generation ────────────────────────────────────────────────────
 
 export interface VideoGenerateOptions {
   script: string

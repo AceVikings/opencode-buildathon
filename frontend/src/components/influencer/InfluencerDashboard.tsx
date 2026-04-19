@@ -218,7 +218,7 @@ function ManualPostModal({ influencerId, onClose, onStarted }: {
               placeholder="e.g. Apple's new chip announcement and what it means for creators"
               className="border border-charcoal/15 bg-transparent px-4 py-2.5 font-inter text-sm text-charcoal placeholder-warm-grey/40 focus:outline-none focus:border-charcoal/40 transition-colors" />
             <p className="font-inter text-[10px] text-warm-grey/60">
-              Gemini will write the script and HeyGen will generate the video. Takes ~2 minutes.
+              The agent will write the script and generate the video. Takes ~2 minutes.
             </p>
           </div>
 

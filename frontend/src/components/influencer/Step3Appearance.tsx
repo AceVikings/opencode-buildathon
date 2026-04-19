@@ -153,7 +153,7 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
         <p className="font-inter text-[10px] uppercase tracking-[0.28em] text-warm-grey mb-1">Step 3 of 3</p>
         <h2 className="font-playfair text-3xl text-charcoal">Avatar & Posting</h2>
         <p className="font-inter text-sm text-warm-grey mt-2">
-          Describe your influencer's look — HeyGen generates four portraits to choose from.
+          Describe your influencer's look — four realistic portrait options will be generated.
           Then connect an X account and configure how often the agent posts.
         </p>
       </div>
@@ -191,7 +191,7 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
       {generating && (
         <div className="border border-dashed border-charcoal/15 flex flex-col items-center justify-center py-16 gap-4">
           <div className="w-8 h-px bg-gold" />
-          <p className="font-inter text-sm text-warm-grey">HeyGen is creating your avatars…</p>
+          <p className="font-inter text-sm text-warm-grey">Generating your avatars…</p>
           <p className="font-inter text-[10px] text-warm-grey/50">Training 4 candidates in parallel. Usually 30–90 seconds.</p>
         </div>
       )}

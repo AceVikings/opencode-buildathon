@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import type { BrandSource, Influencer } from '../../lib/api'
 import { addBrandText, addBrandUrl, addBrandPdf, deleteBrandSource, analyseBrand } from '../../lib/api'
+import { Markdown } from '../Markdown'
 
 interface Props {
   influencer: Influencer
@@ -223,17 +224,17 @@ export function Step2Brand({ influencer, onUpdated, onContinue }: Props) {
 
       {/* Brief output */}
       {brief && (
-        <div className="border border-gold/30 bg-gold/5 p-6">
-          <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey mb-3">
-            Brand Brief (AI-generated)
+        <div className="border border-gold/30 bg-gold/5 px-6 pt-5 pb-6">
+          <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey mb-4">
+            Brand Brief
           </p>
-          <p className="font-inter text-sm text-charcoal whitespace-pre-wrap leading-relaxed">{brief}</p>
+          <Markdown>{brief}</Markdown>
           {imagePromptPreview && (
             <>
-              <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey mt-5 mb-2">
+              <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey mt-6 mb-2">
                 Suggested appearance prompt
               </p>
-              <p className="font-inter text-sm text-charcoal italic">{imagePromptPreview}</p>
+              <p className="font-inter text-[13px] text-charcoal/70 italic leading-relaxed">{imagePromptPreview}</p>
             </>
           )}
         </div>
