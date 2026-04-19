@@ -1,13 +1,15 @@
-import { useEffect, useRef, useState } from 'react'
-import type { AvatarCandidate, Influencer, VideoGenerateOptions, VideoStatusResponse } from '../../lib/api'
+import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import type { AvatarCandidate, Influencer } from '../../lib/api'
 import {
   generateAvatars,
   selectAvatar,
-  generateVideo,
-  getVideoStatus,
   connectInfluencerX,
   getInfluencerXStatus,
   disconnectInfluencerX,
+  requestManualPost,
+  getAgentConfig,
+  updateAgentConfig,
 } from '../../lib/api'
 
 interface Props {
@@ -22,156 +24,9 @@ interface XStatus {
   xName?: string
 }
 
-// ── Video panel sub-component ─────────────────────────────────────────────────
-
-function VideoPanel({ influencerId }: { influencerId: string }) {
-  const [script, setScript] = useState('')
-  const [aspectRatio, setAspectRatio] = useState<'9:16' | '16:9'>('9:16')
-  const [expressiveness, setExpressiveness] = useState<'high' | 'medium' | 'low'>('medium')
-  const [submitting, setSubmitting] = useState(false)
-  const [video, setVideo] = useState<VideoStatusResponse | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  function stopPolling() {
-    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
-  }
-
-  useEffect(() => () => stopPolling(), [])
-
-  async function handleGenerate(e: React.FormEvent) {
-    e.preventDefault()
-    if (!script.trim()) return
-    setSubmitting(true); setError(null); setVideo(null)
-    try {
-      const opts: VideoGenerateOptions = {
-        script: script.trim(),
-        aspectRatio,
-        expressiveness,
-        motionPrompt: 'natural presenting gestures',
-      }
-      const { videoId, status } = await generateVideo(influencerId, opts)
-      const initial: VideoStatusResponse = { videoId, status: status as VideoStatusResponse['status'], videoUrl: null, thumbnailUrl: null, duration: null, failureMessage: null }
-      setVideo(initial)
-
-      // Poll every 8 s
-      pollRef.current = setInterval(async () => {
-        try {
-          const result = await getVideoStatus(influencerId, videoId)
-          setVideo(result)
-          if (result.status === 'completed' || result.status === 'failed') stopPolling()
-        } catch { /* silent */ }
-      }, 8_000)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to start video generation')
-    } finally {
-      setSubmitting(false)
-    }
-  }
-
-  return (
-    <div className="border border-charcoal/10">
-      <div className="px-6 py-4 border-b border-charcoal/10">
-        <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">
-          Generate UGC Video
-        </p>
-      </div>
-      <div className="p-6 flex flex-col gap-4">
-        {error && (
-          <p className="font-inter text-[11px] text-red-600 border border-red-200 bg-red-50 px-4 py-3">{error}</p>
-        )}
-
-        <form onSubmit={handleGenerate} className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
-            <label className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">Script</label>
-            <textarea
-              value={script}
-              onChange={(e) => setScript(e.target.value)}
-              rows={3}
-              placeholder="Write what the influencer will say…"
-              className="border border-charcoal/15 bg-transparent px-4 py-3 font-inter text-sm text-charcoal placeholder-warm-grey/40 resize-none focus:outline-none focus:border-charcoal/40 transition-colors"
-            />
-          </div>
-
-          <div className="grid grid-cols-2 gap-4">
-            <div className="flex flex-col gap-1.5">
-              <label className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">Format</label>
-              <div className="flex gap-2">
-                {(['9:16', '16:9'] as const).map((r) => (
-                  <button key={r} type="button" onClick={() => setAspectRatio(r)}
-                    className={`flex-1 font-inter text-[9px] uppercase tracking-[0.15em] py-2 border transition-colors ${aspectRatio === r ? 'bg-charcoal text-white border-charcoal' : 'text-warm-grey border-charcoal/20 hover:border-charcoal/40'}`}>
-                    {r === '9:16' ? 'Vertical' : 'Widescreen'}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            <div className="flex flex-col gap-1.5">
-              <label className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">Energy</label>
-              <div className="flex gap-2">
-                {(['low', 'medium', 'high'] as const).map((e) => (
-                  <button key={e} type="button" onClick={() => setExpressiveness(e)}
-                    className={`flex-1 font-inter text-[9px] uppercase tracking-[0.15em] py-2 border transition-colors ${expressiveness === e ? 'bg-charcoal text-white border-charcoal' : 'text-warm-grey border-charcoal/20 hover:border-charcoal/40'}`}>
-                    {e}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
-
-          <button type="submit" disabled={submitting || !script.trim()}
-            className="self-end group relative overflow-hidden inline-flex items-center h-9 px-7 bg-charcoal text-white font-inter text-[9px] uppercase tracking-[0.22em] disabled:opacity-40">
-            <span className="absolute inset-0 bg-gold -translate-x-full group-hover:translate-x-0 transition-transform duration-500"
-              style={{ transitionTimingFunction: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)' }} aria-hidden="true" />
-            <span className="relative z-10">{submitting ? 'Starting…' : 'Generate Video'}</span>
-          </button>
-        </form>
-
-        {/* Video status / result */}
-        {video && (
-          <div className="border border-charcoal/10 p-4 flex flex-col gap-3">
-            <div className="flex items-center gap-2">
-              <div className={`w-1.5 h-1.5 ${video.status === 'completed' ? 'bg-gold' : video.status === 'failed' ? 'bg-red-500' : 'bg-warm-grey/40 animate-pulse'}`} />
-              <p className="font-inter text-[10px] uppercase tracking-[0.18em] text-warm-grey">
-                {video.status === 'completed' ? 'Ready' : video.status === 'failed' ? 'Failed' : 'Generating…'}
-              </p>
-              {video.duration && <span className="font-inter text-[10px] text-warm-grey/60 ml-auto">{video.duration.toFixed(1)}s</span>}
-            </div>
-
-            {video.status === 'failed' && video.failureMessage && (
-              <p className="font-inter text-[11px] text-red-600">{video.failureMessage}</p>
-            )}
-
-            {video.status === 'completed' && video.videoUrl && (
-              <div className="flex flex-col gap-3">
-                <video
-                  src={video.videoUrl}
-                  poster={video.thumbnailUrl ?? undefined}
-                  controls
-                  className="w-full max-h-64 object-contain bg-charcoal/5"
-                />
-                <a href={video.videoUrl} target="_blank" rel="noopener noreferrer"
-                  className="font-inter text-[10px] uppercase tracking-[0.18em] text-warm-grey hover:text-charcoal transition-colors">
-                  Download MP4 →
-                </a>
-              </div>
-            )}
-
-            {(video.status === 'pending' || video.status === 'processing') && (
-              <p className="font-inter text-[11px] text-warm-grey/60">
-                HeyGen is rendering — typically takes 1–3 minutes. This updates automatically.
-              </p>
-            )}
-          </div>
-        )}
-      </div>
-    </div>
-  )
-}
-
-// ── Main component ────────────────────────────────────────────────────────────
-
 export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
+  const navigate = useNavigate()
+
   const [prompt, setPrompt] = useState(influencer.imagePrompt)
   const [candidates, setCandidates] = useState<AvatarCandidate[]>(influencer.avatarCandidates ?? [])
   const [selectedAvatarId, setSelectedAvatarId] = useState<string | null>(influencer.heygenAvatarId)
@@ -182,21 +37,31 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
   const [xLoading, setXLoading] = useState(true)
   const [xDisconnecting, setXDisconnecting] = useState(false)
 
+  // Posting
+  const [posting, setPosting] = useState(false)
+
+  // Schedule config (loaded once avatar is selected)
+  const [agentEnabled, setAgentEnabled] = useState(influencer.agentEnabled ?? false)
+  const [intervalMins, setIntervalMins] = useState(influencer.agentIntervalMins ?? 30)
+  const [approvalMode, setApprovalMode] = useState<'auto' | 'approve'>(influencer.postApprovalMode ?? 'approve')
+  const [configSaving, setConfigSaving] = useState(false)
+
   const [error, setError] = useState<string | null>(null)
+  const [successMsg, setSuccessMsg] = useState<string | null>(null)
 
   const isComplete = influencer.status === 'complete' || !!influencer.heygenAvatarId
 
-  // Fetch X status on mount and after OAuth redirect
+  // Fetch X status + agent config on mount
   useEffect(() => {
     const params = new URLSearchParams(window.location.search)
-    const connectedInf = params.get('inf')
-    if (params.get('x_connected') === 'true' && connectedInf === influencer._id) {
+    if (params.get('x_connected') === 'true' && params.get('inf') === influencer._id) {
       window.history.replaceState({}, '', window.location.pathname)
     } else if (params.get('x_error')) {
       setError(`X connection failed: ${params.get('x_error')}`)
       window.history.replaceState({}, '', window.location.pathname)
     }
     fetchXStatus()
+    if (isComplete) loadAgentConfig()
   }, [influencer._id])
 
   async function fetchXStatus() {
@@ -209,6 +74,26 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
     } finally {
       setXLoading(false)
     }
+  }
+
+  async function loadAgentConfig() {
+    try {
+      const cfg = await getAgentConfig(influencer._id)
+      setAgentEnabled(cfg.agentEnabled)
+      setIntervalMins(cfg.agentIntervalMins)
+      setApprovalMode(cfg.postApprovalMode)
+    } catch { /* silent */ }
+  }
+
+  async function saveConfig(patch: { agentEnabled?: boolean; agentIntervalMins?: number; postApprovalMode?: 'auto' | 'approve' }) {
+    setConfigSaving(true)
+    try {
+      await updateAgentConfig(influencer._id, patch)
+      if (patch.agentEnabled !== undefined) setAgentEnabled(patch.agentEnabled)
+      if (patch.agentIntervalMins !== undefined) setIntervalMins(patch.agentIntervalMins)
+      if (patch.postApprovalMode !== undefined) setApprovalMode(patch.postApprovalMode)
+    } catch { /* silent */ }
+    finally { setConfigSaving(false) }
   }
 
   async function handleGenerate() {
@@ -231,6 +116,15 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
       onComplete(updated)
     } catch (e) { setError(e instanceof Error ? e.message : 'Select failed') }
     finally { setSelecting(false) }
+  }
+
+  async function handlePostNow() {
+    setPosting(true); setError(null); setSuccessMsg(null)
+    try {
+      await requestManualPost(influencer._id, { topic: `Latest in ${influencer.niche || 'my niche'}` })
+      setSuccessMsg('Agent is generating your video and post — check the dashboard shortly.')
+    } catch (e) { setError(e instanceof Error ? e.message : 'Failed to start post') }
+    finally { setPosting(false) }
   }
 
   async function handleConnectX() {
@@ -257,15 +151,18 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
     <div className="flex flex-col gap-7">
       <div>
         <p className="font-inter text-[10px] uppercase tracking-[0.28em] text-warm-grey mb-1">Step 3 of 3</p>
-        <h2 className="font-playfair text-3xl text-charcoal">Avatar & Content</h2>
+        <h2 className="font-playfair text-3xl text-charcoal">Avatar & Posting</h2>
         <p className="font-inter text-sm text-warm-grey mt-2">
-          Describe your influencer's look — HeyGen will generate four realistic avatars to choose from.
-          Once selected, generate UGC videos directly.
+          Describe your influencer's look — HeyGen generates four portraits to choose from.
+          Then connect an X account and configure how often the agent posts.
         </p>
       </div>
 
       {error && (
         <p className="font-inter text-[11px] text-red-600 border border-red-200 bg-red-50 px-4 py-3">{error}</p>
+      )}
+      {successMsg && (
+        <p className="font-inter text-[11px] text-charcoal border border-gold/40 bg-gold/5 px-4 py-3">{successMsg}</p>
       )}
 
       {/* ── Appearance prompt ── */}
@@ -295,27 +192,22 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
         <div className="border border-dashed border-charcoal/15 flex flex-col items-center justify-center py-16 gap-4">
           <div className="w-8 h-px bg-gold" />
           <p className="font-inter text-sm text-warm-grey">HeyGen is creating your avatars…</p>
-          <p className="font-inter text-[10px] text-warm-grey/50">Training 4 candidates in parallel. Usually takes 30–90 seconds.</p>
+          <p className="font-inter text-[10px] text-warm-grey/50">Training 4 candidates in parallel. Usually 30–90 seconds.</p>
         </div>
       )}
 
-      {/* ── Avatar candidate grid ── */}
+      {/* ── Candidate grid ── */}
       {!generating && displayCandidates.length > 0 && (
         <div className="flex flex-col gap-3">
-          <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">
-            Select your avatar
-          </p>
+          <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">Select your avatar</p>
           <div className="grid grid-cols-2 gap-3">
             {displayCandidates.map((c, i) => (
               <button key={c.avatarId} type="button" onClick={() => setSelectedAvatarId(c.avatarId)}
                 className={`relative aspect-square overflow-hidden border-2 transition-all duration-200 bg-taupe/40 ${selectedAvatarId === c.avatarId ? 'border-gold' : 'border-transparent hover:border-charcoal/30'}`}>
-                {c.previewImageUrl ? (
-                  <img src={c.previewImageUrl} alt={`Avatar ${i + 1}`} className="w-full h-full object-cover" />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center">
-                    <span className="font-inter text-[10px] text-warm-grey/50 uppercase tracking-[0.2em]">Preview pending</span>
-                  </div>
-                )}
+                {c.previewImageUrl
+                  ? <img src={c.previewImageUrl} alt={`Avatar ${i + 1}`} className="w-full h-full object-cover" />
+                  : <div className="w-full h-full flex items-center justify-center"><span className="font-inter text-[10px] text-warm-grey/50 uppercase tracking-[0.2em]">Preview pending</span></div>
+                }
                 {selectedAvatarId === c.avatarId && (
                   <div className="absolute inset-0 bg-charcoal/10 flex items-center justify-center">
                     <div className="w-6 h-6 bg-gold flex items-center justify-center">
@@ -323,11 +215,10 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
                     </div>
                   </div>
                 )}
-                {/* Preview video hover */}
                 {c.previewVideoUrl && (
                   <a href={c.previewVideoUrl} target="_blank" rel="noopener noreferrer"
                     className="absolute bottom-2 right-2 bg-charcoal/80 text-white font-inter text-[8px] uppercase tracking-[0.15em] px-2 py-1"
-                    onClick={(e) => e.stopPropagation()}>
+                    onClick={e => e.stopPropagation()}>
                     Preview ▶
                   </a>
                 )}
@@ -338,7 +229,7 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
         </div>
       )}
 
-      {/* ── Existing selected avatar (resume) ── */}
+      {/* ── Existing avatar (resume) ── */}
       {!generating && displayCandidates.length === 0 && influencer.selectedImageUrl && (
         <div className="flex flex-col gap-3">
           <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">Current avatar</p>
@@ -393,8 +284,79 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
         </div>
       </div>
 
-      {/* ── Video generation (shown once avatar is selected) ── */}
-      {isComplete && <VideoPanel influencerId={influencer._id} />}
+      {/* ── Agent schedule (only once complete) ── */}
+      {isComplete && (
+        <div className="border border-charcoal/10">
+          <div className="px-6 py-4 border-b border-charcoal/10 flex items-center justify-between">
+            <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">Auto-posting schedule</p>
+            {/* Enable toggle */}
+            <button
+              onClick={() => saveConfig({ agentEnabled: !agentEnabled })}
+              disabled={configSaving}
+              className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${agentEnabled ? 'bg-charcoal' : 'bg-charcoal/20'}`}
+            >
+              <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${agentEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+            </button>
+          </div>
+          <div className="px-6 py-5 flex flex-col gap-4">
+            {/* Interval */}
+            <div className="flex items-center justify-between gap-4">
+              <label className="font-inter text-[11px] text-warm-grey">Post every</label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number" min={5} value={intervalMins}
+                  onChange={e => setIntervalMins(Number(e.target.value))}
+                  onBlur={e => saveConfig({ agentIntervalMins: Number(e.target.value) })}
+                  className="w-16 border border-charcoal/15 bg-transparent px-3 py-1.5 font-inter text-sm text-charcoal text-center focus:outline-none focus:border-charcoal/40 transition-colors"
+                />
+                <span className="font-inter text-[11px] text-warm-grey">minutes</span>
+              </div>
+            </div>
+
+            {/* Approval mode */}
+            <div className="flex items-center justify-between gap-4">
+              <label className="font-inter text-[11px] text-warm-grey">Post mode</label>
+              <div className="flex gap-2">
+                {(['auto', 'approve'] as const).map(mode => (
+                  <button key={mode} onClick={() => saveConfig({ postApprovalMode: mode })}
+                    className={`font-inter text-[9px] uppercase tracking-[0.15em] px-4 py-1.5 border transition-colors ${approvalMode === mode ? 'bg-charcoal text-white border-charcoal' : 'text-warm-grey border-charcoal/20 hover:border-charcoal/40'}`}>
+                    {mode === 'auto' ? 'Auto-post' : 'Approve first'}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <p className="font-inter text-[10px] text-warm-grey/60">
+              {approvalMode === 'auto'
+                ? 'Agent posts immediately — check the dashboard to see what went live.'
+                : 'Agent drafts content for your review before anything is posted.'}
+            </p>
+
+            {/* Generate & Post Now */}
+            {xStatus?.connected && (
+              <div className="pt-1 border-t border-charcoal/10 flex items-center justify-between gap-4">
+                <p className="font-inter text-[11px] text-warm-grey">
+                  Generate a post right now using the agent.
+                </p>
+                <button onClick={handlePostNow} disabled={posting}
+                  className="group relative overflow-hidden flex-shrink-0 inline-flex items-center h-9 px-6 bg-charcoal text-white font-inter text-[9px] uppercase tracking-[0.18em] disabled:opacity-50">
+                  <span className="absolute inset-0 bg-gold -translate-x-full group-hover:translate-x-0 transition-transform duration-500"
+                    style={{ transitionTimingFunction: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)' }} aria-hidden="true" />
+                  <span className="relative z-10">{posting ? 'Starting…' : '▶ Post Now'}</span>
+                </button>
+              </div>
+            )}
+
+            {/* Link to dashboard */}
+            {isComplete && (
+              <button onClick={() => navigate(`/influencer/${influencer._id}`)}
+                className="font-inter text-[10px] uppercase tracking-[0.18em] text-warm-grey hover:text-charcoal transition-colors self-start">
+                Open agent dashboard →
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ── Complete ── */}
       <div className="flex items-center justify-between pt-2">
