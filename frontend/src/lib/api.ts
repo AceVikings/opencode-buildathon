@@ -217,3 +217,40 @@ export async function disconnectInfluencerX(id: string): Promise<{ disconnected:
   if (!res.ok) throw new Error('Failed to disconnect X account')
   return res.json()
 }
+
+export async function deleteInfluencer(id: string): Promise<{ deleted: boolean }> {
+  const res = await apiFetch(`/influencers/${id}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Failed to delete influencer')
+  return res.json()
+}
+
+// ── X Trends ─────────────────────────────────────────────────────────────────
+
+export interface Trend {
+  name: string
+  postCount: number | null
+  category: string | null
+  trendingSince: string | null
+}
+
+export interface TrendsResponse {
+  type: 'personalized' | 'woeid'
+  woeid?: number
+  trends: Trend[]
+}
+
+export async function getTrends(opts?: {
+  influencerId?: string
+  woeid?: number
+}): Promise<TrendsResponse> {
+  const params = new URLSearchParams()
+  if (opts?.influencerId) params.set('influencerId', opts.influencerId)
+  if (opts?.woeid) params.set('woeid', String(opts.woeid))
+  const qs = params.toString()
+  const res = await apiFetch(`/twitter/trends${qs ? `?${qs}` : ''}`)
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error((err as { error?: string }).error ?? 'Failed to fetch trends')
+  }
+  return res.json()
+}

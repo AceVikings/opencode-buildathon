@@ -1,4 +1,6 @@
+import { useState } from 'react'
 import type { Influencer } from '../../lib/api'
+import { deleteInfluencer } from '../../lib/api'
 
 const STATUS_LABELS: Record<Influencer['status'], string> = {
   draft: 'Draft',
@@ -19,10 +21,24 @@ const STATUS_COLOR: Record<Influencer['status'], string> = {
 interface Props {
   influencer: Influencer
   onEdit: (inf: Influencer) => void
+  onDeleted: (id: string) => void
 }
 
-export function InfluencerCard({ influencer, onEdit }: Props) {
+export function InfluencerCard({ influencer, onEdit, onDeleted }: Props) {
   const isComplete = influencer.status === 'complete'
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
+
+  async function handleDelete() {
+    setDeleting(true)
+    try {
+      await deleteInfluencer(influencer._id)
+      onDeleted(influencer._id)
+    } catch {
+      setDeleting(false)
+      setConfirmDelete(false)
+    }
+  }
 
   return (
     <div className="group border border-charcoal/10 bg-alabaster hover:border-charcoal/30 transition-colors duration-300 flex flex-col">
@@ -63,13 +79,11 @@ export function InfluencerCard({ influencer, onEdit }: Props) {
 
       {/* Info */}
       <div className="p-5 flex flex-col gap-2 flex-1">
-        <div className="flex items-start justify-between gap-2">
-          <div className="min-w-0">
-            <p className="font-playfair text-lg text-charcoal leading-tight truncate">{influencer.name}</p>
-            {influencer.xConnectionId && (
-              <p className="font-inter text-[10px] text-warm-grey mt-0.5">X connected</p>
-            )}
-          </div>
+        <div className="min-w-0">
+          <p className="font-playfair text-lg text-charcoal leading-tight truncate">{influencer.name}</p>
+          {influencer.xConnectionId && (
+            <p className="font-inter text-[10px] text-warm-grey mt-0.5">X connected</p>
+          )}
         </div>
 
         {influencer.niche && (
@@ -97,14 +111,40 @@ export function InfluencerCard({ influencer, onEdit }: Props) {
         )}
       </div>
 
-      {/* Footer action */}
-      <div className="border-t border-charcoal/10 px-5 py-3">
+      {/* Footer actions */}
+      <div className="border-t border-charcoal/10 px-5 py-3 flex items-center justify-between gap-3">
         <button
           onClick={() => onEdit(influencer)}
-          className="w-full font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey hover:text-charcoal transition-colors duration-200 text-center"
+          className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey hover:text-charcoal transition-colors duration-200"
         >
-          {isComplete ? 'Edit / Manage' : 'Continue setup →'}
+          {isComplete ? 'Edit / Manage' : 'Continue →'}
         </button>
+
+        {/* Delete — two-step confirm */}
+        {!confirmDelete ? (
+          <button
+            onClick={() => setConfirmDelete(true)}
+            className="font-inter text-[10px] uppercase tracking-[0.18em] text-warm-grey/40 hover:text-red-500 transition-colors duration-200"
+          >
+            Delete
+          </button>
+        ) : (
+          <div className="flex items-center gap-2">
+            <button
+              onClick={handleDelete}
+              disabled={deleting}
+              className="font-inter text-[9px] uppercase tracking-[0.18em] text-red-600 hover:text-red-800 transition-colors"
+            >
+              {deleting ? '…' : 'Confirm'}
+            </button>
+            <button
+              onClick={() => setConfirmDelete(false)}
+              className="font-inter text-[9px] uppercase tracking-[0.18em] text-warm-grey hover:text-charcoal transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
     </div>
   )

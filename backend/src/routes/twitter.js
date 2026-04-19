@@ -19,6 +19,14 @@
  * All tweet-posting and disconnect operations live in influencers.js
  * under /api/influencers/:id/x/*.
  *
+ *   GET  /api/twitter/trends
+ *        Returns trending topics. Uses:
+ *          - GET /2/users/personalized_trends  (user OAuth 2.0 token, for influencer)
+ *            when ?influencerId=<id> is supplied and that influencer has an X connection
+ *          - GET /2/trends/by/woeid/:woeid     (Bearer Token, app-level)
+ *            as fallback or when ?woeid=<id> is supplied (default woeid=1 = worldwide)
+ *        Fields returned: trend_name, post_count / tweet_count, trending_since (where available)
+ *
  * Client type note:
  *   - Confidential client (Web App / Automated App): has X_CLIENT_SECRET → use Basic Auth header
  *   - Public client (Native App / SPA): no secret → send client_id in body only
@@ -255,6 +263,108 @@ router.get('/callback', async (req, res) => {
     const xErr = err?.response?.data
     console.error('[twitter] callback error:', JSON.stringify(xErr ?? err.message))
     return res.redirect(`${FRONTEND}/dashboard?x_error=token_exchange_failed`)
+  }
+})
+
+// ── Trends ────────────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/twitter/trends
+ *
+ * Query params:
+ *   influencerId  — if provided, fetch personalized trends using that influencer's
+ *                   OAuth 2.0 user access token (GET /2/users/personalized_trends).
+ *                   Fields: trend_name, post_count, category, trending_since
+ *   woeid         — WOEID for location-based trends (default: 1 = worldwide).
+ *                   Uses app Bearer Token. Fields: trend_name, tweet_count
+ *
+ * If influencerId is provided and has a valid token, personalized trends take
+ * precedence. Falls back to WOEID trends if the influencer has no X connection.
+ */
+router.get('/trends', authenticate, async (req, res) => {
+  const { influencerId, woeid = '1' } = req.query
+
+  // ── Option A: personalised trends via the influencer's user token ─────────
+  if (influencerId) {
+    try {
+      const inf = await Influencer.findById(String(influencerId))
+      if (!inf || inf.uid !== req.user.uid) {
+        return res.status(403).json({ error: 'Influencer not found or forbidden' })
+      }
+
+      if (inf.xConnectionId) {
+        const conn = await XConnection.findById(inf.xConnectionId)
+        if (conn) {
+          // Refresh token if needed (reuse helper from influencers.js pattern)
+          const BUFFER = 5 * 60 * 1000
+          if (conn.tokenExpiresAt && Date.now() >= conn.tokenExpiresAt - BUFFER && conn.refreshToken) {
+            const rp = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: conn.refreshToken })
+            if (!CLIENT_SECRET) rp.append('client_id', CLIENT_ID)
+            const { data: rd } = await axios.post(X_TOKEN_URL, rp.toString(), {
+              headers: {
+                'Content-Type': 'application/x-www-form-urlencoded',
+                ...(CLIENT_SECRET ? { Authorization: 'Basic ' + Buffer.from(`${CLIENT_ID}:${CLIENT_SECRET}`).toString('base64') } : {}),
+              },
+            })
+            conn.accessToken = rd.access_token
+            if (rd.refresh_token) conn.refreshToken = rd.refresh_token
+            conn.tokenExpiresAt = rd.expires_in ? Date.now() + rd.expires_in * 1000 : null
+            await conn.save()
+          }
+
+          const fields = 'trend_name,post_count,category,trending_since'
+          const { data } = await axios.get(
+            `https://api.x.com/2/users/personalized_trends?personalized_trend.fields=${fields}`,
+            { headers: { Authorization: `Bearer ${conn.accessToken}` } }
+          )
+
+          return res.json({
+            type: 'personalized',
+            trends: (data.data ?? []).map((t) => ({
+              name: t.trend_name,
+              postCount: t.post_count ?? null,
+              category: t.category ?? null,
+              trendingSince: t.trending_since ?? null,
+            })),
+          })
+        }
+      }
+    } catch (err) {
+      console.warn('[twitter/trends] personalized fetch failed, falling back:', err?.response?.data ?? err.message)
+      // Fall through to WOEID
+    }
+  }
+
+  // ── Option B: location trends via Bearer Token ────────────────────────────
+  const bearerToken = process.env.X_BEARER_TOKEN
+  if (!bearerToken) {
+    return res.status(503).json({ error: 'X_BEARER_TOKEN not configured' })
+  }
+
+  try {
+    const parsedWoeid = parseInt(String(woeid), 10) || 1
+    const { data } = await axios.get(
+      `https://api.x.com/2/trends/by/woeid/${parsedWoeid}?max_trends=20&trend.fields=trend_name,tweet_count`,
+      { headers: { Authorization: `Bearer ${bearerToken}` } }
+    )
+
+    return res.json({
+      type: 'woeid',
+      woeid: parsedWoeid,
+      trends: (data.data ?? []).map((t) => ({
+        name: t.trend_name,
+        postCount: t.tweet_count ?? null,
+        trendingSince: null,
+        category: null,
+      })),
+    })
+  } catch (err) {
+    const xErr = err?.response?.data
+    console.error('[twitter/trends] WOEID fetch failed:', JSON.stringify(xErr ?? err.message))
+    return res.status(err?.response?.status ?? 500).json({
+      error: 'Failed to fetch trends',
+      detail: xErr ?? err.message,
+    })
   }
 })
 

@@ -181,7 +181,12 @@ export function DashboardPage() {
             ) : (
               <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
                 {influencers.map((inf) => (
-                  <InfluencerCard key={inf._id} influencer={inf} onEdit={openEdit} />
+                  <InfluencerCard
+                    key={inf._id}
+                    influencer={inf}
+                    onEdit={openEdit}
+                    onDeleted={(id) => setInfluencers((prev) => prev.filter((x) => x._id !== id))}
+                  />
                 ))}
               </div>
             )}

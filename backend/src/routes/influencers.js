@@ -99,10 +99,16 @@ router.patch('/:id/persona', async (req, res) => {
   return res.json(inf)
 })
 
-// Delete influencer
+// Delete influencer (also removes linked XConnection)
 router.delete('/:id', async (req, res) => {
   const inf = await getOwned(req.params.id, req.user.uid, res)
   if (!inf) return
+
+  // Clean up X connection if one exists
+  if (inf.xConnectionId) {
+    await XConnection.deleteOne({ _id: inf.xConnectionId }).catch(() => {})
+  }
+
   await Influencer.deleteOne({ _id: inf._id })
   return res.json({ deleted: true })
 })
