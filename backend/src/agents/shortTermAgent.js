@@ -371,7 +371,7 @@ async function postToX(conn, tweetText, mediaId = null) {
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  const data = await res.json()
+  const data = await safeJson(res)
   if (!res.ok) throw new Error(`X post failed (${res.status}): ${JSON.stringify(data)}`)
   return data.data
 }
