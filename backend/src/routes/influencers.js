@@ -964,10 +964,73 @@ router.post('/:id/agents/posts/:postId/approve', async (req, res) => {
     await conn.save()
   }
 
+  // If this draft has a HeyGen video, upload it to X first
+  let xMediaId = null
+  if (draft.heygenVideoUrl) {
+    try {
+      const CHUNK_SIZE_APPROVE = 5 * 1024 * 1024
+      const dlRes = await fetch(draft.heygenVideoUrl)
+      if (!dlRes.ok) throw new Error(`Video download failed: ${dlRes.status}`)
+      const videoBuffer = Buffer.from(await dlRes.arrayBuffer())
+      const authHeader = { Authorization: `Bearer ${conn.accessToken}` }
+
+      // INIT
+      const initParams = new URLSearchParams({ command: 'INIT', total_bytes: String(videoBuffer.length), media_type: 'video/mp4', media_category: 'tweet_video' })
+      const initRes = await fetch('https://upload.twitter.com/1.1/media/upload.json', {
+        method: 'POST', headers: { ...authHeader, 'Content-Type': 'application/x-www-form-urlencoded' }, body: initParams.toString(),
+      })
+      const initData = await initRes.json()
+      if (!initRes.ok) throw new Error(`INIT failed: ${JSON.stringify(initData)}`)
+      xMediaId = initData.media_id_string
+
+      // APPEND
+      let seg = 0
+      for (let offset = 0; offset < videoBuffer.length; offset += CHUNK_SIZE_APPROVE) {
+        const chunk = videoBuffer.slice(offset, Math.min(offset + CHUNK_SIZE_APPROVE, videoBuffer.length))
+        const form = new FormData()
+        form.append('command', 'APPEND'); form.append('media_id', xMediaId)
+        form.append('segment_index', String(seg++))
+        form.append('media', new Blob([chunk], { type: 'video/mp4' }), 'video.mp4')
+        const appendRes = await fetch('https://upload.twitter.com/1.1/media/upload.json', { method: 'POST', headers: authHeader, body: form })
+        if (!appendRes.ok && appendRes.status !== 204) throw new Error(`APPEND seg ${seg - 1} failed: ${appendRes.status}`)
+      }
+
+      // FINALIZE
+      const finalizeParams = new URLSearchParams({ command: 'FINALIZE', media_id: xMediaId })
+      const finalizeRes = await fetch('https://upload.twitter.com/1.1/media/upload.json', {
+        method: 'POST', headers: { ...authHeader, 'Content-Type': 'application/x-www-form-urlencoded' }, body: finalizeParams.toString(),
+      })
+      const finalizeData = await finalizeRes.json()
+      if (!finalizeRes.ok) throw new Error(`FINALIZE failed: ${JSON.stringify(finalizeData)}`)
+
+      // Poll STATUS
+      let checkAfter = finalizeData.processing_info?.check_after_secs ?? 5
+      for (let i = 0; i < 20; i++) {
+        const state = finalizeData.processing_info?.state
+        if (state === 'succeeded' || !state) break
+        if (state === 'failed') throw new Error('X video processing failed')
+        await new Promise(r => setTimeout(r, checkAfter * 1000))
+        const statusRes = await fetch(`https://upload.twitter.com/1.1/media/upload.json?command=STATUS&media_id=${xMediaId}`, { headers: authHeader })
+        const statusData = await statusRes.json()
+        if (statusData.processing_info?.state === 'succeeded') break
+        if (statusData.processing_info?.state === 'failed') throw new Error('X video processing failed')
+        checkAfter = statusData.processing_info?.check_after_secs ?? 5
+      }
+    } catch (videoErr) {
+      console.warn('[approve] Video upload to X failed, posting text only:', videoErr.message)
+      xMediaId = null
+    }
+  }
+
+  const tweetBody = {
+    text: draft.text,
+    ...(xMediaId ? { media: { media_ids: [xMediaId] } } : {}),
+    made_with_ai: true,
+  }
   const postRes = await fetch('https://api.x.com/2/tweets', {
     method: 'POST',
     headers: { Authorization: `Bearer ${conn.accessToken}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ text: draft.text }),
+    body: JSON.stringify(tweetBody),
   })
   const postData = await postRes.json()
   if (!postRes.ok) return res.status(postRes.status).json({ error: 'X post failed', detail: postData })
