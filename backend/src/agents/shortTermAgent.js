@@ -31,6 +31,13 @@ const MAX_STEPS = 10
 const BEARER = () => process.env.X_BEARER_TOKEN
 const X_BASE = 'https://api.x.com/2'
 
+// Safe JSON parse — never throws, returns {} on empty/invalid body
+async function safeJson(res) {
+  const text = await res.text().catch(() => '')
+  if (!text.trim()) return {}
+  try { return JSON.parse(text) } catch { return { _raw: text } }
+}
+
 // ── LLM ───────────────────────────────────────────────────────────────────────
 
 function getLLM(temp = 0.7) {
@@ -53,7 +60,7 @@ async function getValidToken(conn) {
     const headers = { 'Content-Type': 'application/x-www-form-urlencoded' }
     if (clientSecret) headers.Authorization = 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
     const res = await fetch('https://api.x.com/2/oauth2/token', { method: 'POST', headers, body: params.toString() })
-    const data = await res.json()
+    const data = await safeJson(res)
     conn.accessToken = data.access_token
     if (data.refresh_token) conn.refreshToken = data.refresh_token
     conn.tokenExpiresAt = data.expires_in ? Date.now() + data.expires_in * 1000 : null
@@ -72,7 +79,7 @@ async function fetchTrends(conn) {
         `${X_BASE}/users/personalized_trends?personalized_trend.fields=trend_name,post_count,category,trending_since`,
         { headers: { Authorization: `Bearer ${token}` } }
       )
-      const json = await res.json()
+      const json = await safeJson(res)
       return (json.data ?? []).slice(0, 15).map(t =>
         `${t.trend_name} (${t.post_count ?? '?'} posts, category: ${t.category ?? 'general'})`
       ).join('\n')
@@ -83,7 +90,7 @@ async function fetchTrends(conn) {
       `${X_BASE}/trends/by/woeid/1?max_trends=15&trend.fields=trend_name,tweet_count`,
       { headers: { Authorization: `Bearer ${bearer}` } }
     )
-    const json = await res.json()
+    const json = await safeJson(res)
     return (json.data ?? []).map(t => `${t.trend_name} (${t.tweet_count ?? '?'} tweets)`).join('\n')
   } catch { return '' }
 }
@@ -201,12 +208,12 @@ const webSearchTool = new DynamicStructuredTool({
       if (GOOGLE_CSE_KEY && GOOGLE_CSE_ID) {
         const qs = new URLSearchParams({ key: GOOGLE_CSE_KEY, cx: GOOGLE_CSE_ID, q: query, num: String(Math.min(numResults, 5)) })
         const res = await fetch(`https://www.googleapis.com/customsearch/v1?${qs}`)
-        const json = await res.json()
+        const json = await safeJson(res)
         return (json.items ?? []).map(i => `${i.title}\n${i.snippet}`).join('\n\n') || 'No results.'
       }
       const qs = new URLSearchParams({ q: query, format: 'json', no_html: '1', skip_disambig: '1' })
       const res = await fetch(`https://api.duckduckgo.com/?${qs}`)
-      const json = await res.json()
+      const json = await safeJson(res)
       const parts = [json.AbstractText, ...(json.RelatedTopics ?? []).slice(0, numResults).map(t => t.Text)].filter(Boolean)
       return parts.join('\n\n') || `No results for: ${query}`
     } catch (err) { return `Search failed: ${err.message}` }
@@ -279,7 +286,7 @@ async function uploadVideoToX(accessToken, videoUrl) {
     headers: { ...authHeader, 'Content-Type': 'application/x-www-form-urlencoded' },
     body: initParams.toString(),
   })
-  const initData = await initRes.json()
+  const initData = await safeJson(initRes)
   if (!initRes.ok) throw new Error(`X media INIT failed: ${JSON.stringify(initData)}`)
   const mediaId = initData.media_id_string
   console.log(`[uploadVideoToX] INIT ok, media_id=${mediaId}`)
@@ -314,7 +321,7 @@ async function uploadVideoToX(accessToken, videoUrl) {
     headers: { ...authHeader, 'Content-Type': 'application/x-www-form-urlencoded' },
     body: finalizeParams.toString(),
   })
-  const finalizeData = await finalizeRes.json()
+  const finalizeData = await safeJson(finalizeRes)
   if (!finalizeRes.ok) throw new Error(`X media FINALIZE failed: ${JSON.stringify(finalizeData)}`)
   console.log(`[uploadVideoToX] FINALIZE ok, processing_info state=${finalizeData.processing_info?.state}`)
 
@@ -333,7 +340,7 @@ async function uploadVideoToX(accessToken, videoUrl) {
         `https://upload.twitter.com/1.1/media/upload.json?command=STATUS&media_id=${mediaId}`,
         { headers: authHeader }
       )
-      const statusData = await statusRes.json()
+      const statusData = await safeJson(statusRes)
       const newState = statusData.processing_info?.state
       console.log(`[uploadVideoToX] STATUS attempt ${attempt + 1}: ${newState}`)
       if (newState === 'succeeded') break
