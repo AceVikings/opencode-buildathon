@@ -2,8 +2,13 @@ import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './contexts/AuthContext'
 import { AuthPage } from './components/AuthPage'
 import { HomePage } from './components/HomePage'
+import { WaitlistPage } from './components/WaitlistPage'
+import { DashboardPage } from './components/DashboardPage'
 
-function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
+const IS_DEV = import.meta.env.DEV
+
+/** Route that requires auth. Redirects to /auth while loading or unauthenticated. */
+function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
 
   if (loading) {
@@ -16,24 +21,42 @@ function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
     )
   }
 
-  return user ? <Navigate to="/" replace /> : <>{children}</>
+  return user ? <>{children}</> : <Navigate to="/auth" replace />
 }
+
+/** Where authenticated users land after sign-in/sign-up. */
+const APP_HOME = IS_DEV ? '/dashboard' : '/waitlist'
 
 function App() {
   return (
     <Routes>
+      {/* Public */}
       <Route path="/" element={<HomePage />} />
+      <Route path="/auth" element={<AuthPage />} />
+
+      {/* Authenticated */}
       <Route
-        path="/auth"
+        path="/waitlist"
         element={
-          <PublicOnlyRoute>
-            <AuthPage />
-          </PublicOnlyRoute>
+          <ProtectedRoute>
+            <WaitlistPage />
+          </ProtectedRoute>
         }
       />
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute>
+            <DashboardPage />
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Fallback */}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   )
 }
 
+export { APP_HOME }
 export default App

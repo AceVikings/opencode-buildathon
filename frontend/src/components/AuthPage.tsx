@@ -7,6 +7,7 @@ import {
 } from 'firebase/auth'
 import type { AuthError } from 'firebase/auth'
 import { auth, googleProvider } from '../lib/firebase'
+import { APP_HOME } from '../App'
 
 type Mode = 'signin' | 'signup'
 
@@ -135,7 +136,7 @@ export function AuthPage() {
     try {
       if (mode === 'signin') {
         await signInWithEmailAndPassword(auth, email, password)
-        navigate('/', { replace: true })
+        navigate(APP_HOME, { replace: true })
       } else {
         const cred = await createUserWithEmailAndPassword(auth, email, password)
         await addToWaitlist(email, cred.user.uid, cred.user.displayName, 'email')
@@ -165,7 +166,7 @@ export function AuthPage() {
         setWaitlistedEmail(cred.user.email ?? '')
         setWaitlisted(true)
       } else {
-        navigate('/', { replace: true })
+        navigate(APP_HOME, { replace: true })
       }
     } catch (err) {
       setError(friendlyError(err as AuthError))
