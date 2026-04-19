@@ -45,8 +45,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev
 
-# Download the Playwright browser binaries (chromium headless shell only)
-RUN npx playwright install chromium
+# Download Playwright browser binaries to a fixed, world-readable path
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+RUN npx playwright install chromium && chmod -R 755 /ms-playwright
 
 # Copy source
 COPY src/ ./src/
@@ -57,6 +58,7 @@ USER appuser
 
 ENV NODE_ENV=production
 ENV PORT=8080
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 EXPOSE 8080
 
 CMD ["node", "src/index.js"]

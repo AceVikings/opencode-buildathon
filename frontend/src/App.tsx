@@ -4,6 +4,7 @@ import { AuthPage } from './components/AuthPage'
 import { HomePage } from './components/HomePage'
 import { WaitlistPage } from './components/WaitlistPage'
 import { DashboardPage } from './components/DashboardPage'
+import { InfluencerDashboard } from './components/influencer/InfluencerDashboard'
 
 const Spinner = () => (
   <div className="min-h-screen bg-alabaster flex items-center justify-center">
@@ -51,6 +52,15 @@ function App() {
         element={
           <ProtectedRoute>
             <DashboardPage />
+          </ProtectedRoute>
+        }
+      />
+
+      <Route
+        path="/influencer/:id"
+        element={
+          <ProtectedRoute>
+            <InfluencerDashboard />
           </ProtectedRoute>
         }
       />

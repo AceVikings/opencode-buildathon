@@ -99,35 +99,45 @@ async function fetchTrends(conn) {
 async function generateScriptAndTweet({ inf, topic, trends, guidance, brandBrief }) {
   const llm = getLLM(0.8)
 
-  const prompt = `You are a scriptwriter for an AI social media influencer.
+  // Build a rich personality block so the LLM fully inhabits the character
+  const personalityBlock = [
+    `Name: ${inf.name}`,
+    inf.niche        && `Niche: ${inf.niche}`,
+    inf.goal         && `Current goal: ${inf.goal}`,
+    inf.bio          && `Bio / Personality:\n${inf.bio}`,
+    brandBrief       && `Brand brief (from scraped sources):\n${brandBrief}`,
+    guidance         && `Long-term strategy guidance:\n${guidance}`,
+  ].filter(Boolean).join('\n\n')
 
-Influencer: "${inf.name}"
-Niche: ${inf.niche || 'lifestyle'}
-Goal: ${inf.goal || 'grow audience'}
-Bio: ${inf.bio || ''}
+  const prompt = `You are writing a social media video script that will be performed by an AI influencer avatar.
+You must write ENTIRELY in the influencer's voice — their personality, tone, and style must come through naturally.
 
-Brand brief:
-${brandBrief || 'Not available.'}
+━━━ INFLUENCER PERSONA ━━━
+${personalityBlock}
 
-Long-term strategy guidance:
-${guidance || 'No guidance yet — use niche and goal.'}
+━━━ CONTEXT ━━━
+${trends ? `Trending on X right now:\n${trends}\n` : ''}
+${topic ? `Topic to cover: ${topic}` : ''}
 
-${trends ? `Current trending topics on X:\n${trends}\n` : ''}
-${topic ? `Requested topic: ${topic}\n` : ''}
+━━━ YOUR TASK ━━━
+Generate three things:
 
-Generate:
-1. VIDEO_SCRIPT: A casual, natural-sounding spoken script for a 15–30 second vertical video.
-   - Write it as the influencer speaking directly to camera
-   - Conversational, not scripted-sounding — use natural pauses, contractions
-   - Must land within 15–30 seconds when spoken at normal pace (~130 wpm = 32–65 words)
-   - DO NOT include stage directions, timecodes, or action notes
-   - Pick the most relevant trending angle to the niche, or use the requested topic
+1. VIDEO_SCRIPT
+   - The exact words the influencer will speak. No stage directions, no timecodes, no brackets.
+   - First person, direct-to-camera, conversational. Use contractions, natural pauses (commas), rhetorical questions.
+   - Voice must match the bio and brand brief above — if they're edgy and witty, be edgy and witty; if warm and aspirational, be that.
+   - 32–65 words (~15–30 seconds at 130 wpm). Count carefully — err on the short side.
+   - End with a clear call-to-action or memorable hook.
 
-2. TWEET_TEXT: A tweet caption to accompany the video post (max 240 chars to leave room for links)
+2. TWEET_TEXT
+   - Caption to post with the video. Max 240 characters.
+   - Same voice as the script.
+   - No hashtag spam — at most 1–2 relevant hashtags.
 
-3. REASONING: 1–2 sentences on why this topic + angle will perform well
+3. REASONING
+   - 1–2 sentences on why this angle will resonate given the persona and current trends.
 
-Reply ONLY in this JSON (no markdown fences):
+Reply ONLY in this JSON (no markdown fences, no extra keys):
 {"script":"...","tweetText":"...","reasoning":"..."}`
 
   const res = await llm.invoke([new HumanMessage(prompt)])
@@ -309,17 +319,27 @@ async function runShortTermAgent(influencerId, uid, opts = {}) {
       const draftTool = makeDraftTool()
       const agent = createReactAgent({ llm: getLLM(), tools: [makeTrendsTool(conn), webSearchTool, draftTool], maxIterations: MAX_STEPS })
 
-      const systemPrompt = `You are an autonomous content strategist for AI influencer "${inf.name}" (niche: ${inf.niche || 'lifestyle'}, goal: ${inf.goal || 'grow audience'}).
+      const systemPrompt = `You are an autonomous content strategist for an AI influencer.
+
+━━━ INFLUENCER PERSONA ━━━
+Name: ${inf.name}
+Niche: ${inf.niche || 'lifestyle'}
+Goal: ${inf.goal || 'grow audience'}
+${inf.bio ? `Personality / Voice: ${inf.bio}` : ''}
+${inf.brandBrief ? `Brand brief:\n${inf.brandBrief}` : ''}
 
 Long-term strategy:
 ${inf.longTermStrategy || 'Not set yet.'}
 
-Your task:
+━━━ YOUR TASK ━━━
 1. Call get_trends to see what's trending on X right now
-2. Optionally call web_search once to research an angle
-3. Call decide_topic ONCE with the best topic to post about today
+2. Optionally call web_search once to research the best angle
+3. Call decide_topic ONCE with the topic that:
+   - Is most relevant to the influencer's niche AND current trends
+   - Fits their personality and brand voice (edgy, warm, authoritative — match the bio)
+   - Is specific and concrete — not "AI" but "OpenAI's new model and what it means for creators"
 
-Keep it relevant to the niche. Be specific — not just "tech" but "Apple's new chip announcement".`
+The topic will be handed to a scriptwriter who will write in this influencer's exact voice.`
 
       const result = await agent.invoke({ messages: [new HumanMessage(systemPrompt)] })
       steps.push(...extractSteps(result.messages))

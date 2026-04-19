@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import type { Influencer } from '../../lib/api'
 import { deleteInfluencer } from '../../lib/api'
 
@@ -28,6 +29,7 @@ export function InfluencerCard({ influencer, onEdit, onDeleted }: Props) {
   const isComplete = influencer.status === 'complete'
   const [confirmDelete, setConfirmDelete] = useState(false)
   const [deleting, setDeleting] = useState(false)
+  const navigate = useNavigate()
 
   async function handleDelete() {
     setDeleting(true)
@@ -114,10 +116,10 @@ export function InfluencerCard({ influencer, onEdit, onDeleted }: Props) {
       {/* Footer actions */}
       <div className="border-t border-charcoal/10 px-5 py-3 flex items-center justify-between gap-3">
         <button
-          onClick={() => onEdit(influencer)}
+          onClick={() => isComplete ? navigate(`/influencer/${influencer._id}`) : onEdit(influencer)}
           className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey hover:text-charcoal transition-colors duration-200"
         >
-          {isComplete ? 'Edit / Manage' : 'Continue →'}
+          {isComplete ? 'Open Dashboard →' : 'Continue →'}
         </button>
 
         {/* Delete — two-step confirm */}

@@ -76,14 +76,14 @@ export function InfluencerWizard({ initialInfluencer, onClose, onComplete }: Pro
         onClick={(e) => e.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex-shrink-0 flex items-center justify-between px-8 py-5 border-b border-charcoal/10">
-          <div className="flex items-center gap-6">
-            <span className="font-playfair text-lg tracking-[0.12em] uppercase text-charcoal">
+        <div className="flex-shrink-0 flex items-center justify-between gap-4 px-6 sm:px-8 py-4 sm:py-5 border-b border-charcoal/10">
+          <div className="flex items-center gap-4 min-w-0">
+            <span className="font-playfair text-base sm:text-lg tracking-[0.12em] uppercase text-charcoal truncate">
               {influencer ? influencer.name : 'New Influencer'}
             </span>
 
             {/* Step indicator */}
-            <div className="hidden sm:flex items-center gap-0">
+            <div className="hidden sm:flex items-center gap-0 flex-shrink-0">
               {STEP_LABELS.map((label, i) => {
                 const s = (i + 1) as WizardStep
                 const done = step > s
@@ -127,7 +127,7 @@ export function InfluencerWizard({ initialInfluencer, onClose, onComplete }: Pro
 
           <button
             onClick={onClose}
-            className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey hover:text-charcoal transition-colors"
+            className="flex-shrink-0 font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey hover:text-charcoal transition-colors whitespace-nowrap"
           >
             {influencer ? 'Save draft' : 'Cancel'}
           </button>
