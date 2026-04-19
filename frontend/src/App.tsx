@@ -25,16 +25,16 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth()
   if (loading) return <Spinner />
-  return user ? <Navigate to="/dashboard" replace /> : <>{children}</>
+  return user ? <Navigate to="/waitlist" replace /> : <>{children}</>
 }
 
 /** Where authenticated users land after sign-in/sign-up. */
-const APP_HOME = '/dashboard'
+const APP_HOME = '/waitlist'
 
 function App() {
   return (
     <Routes>
-      {/* Public — redirect to dashboard if already signed in */}
+      {/* Public — redirect to waitlist if already signed in */}
       <Route path="/" element={<PublicOnlyRoute><HomePage /></PublicOnlyRoute>} />
       <Route path="/auth" element={<PublicOnlyRoute><AuthPage /></PublicOnlyRoute>} />
 
