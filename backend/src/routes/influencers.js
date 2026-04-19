@@ -36,10 +36,20 @@
  *
  * ── Agents ────────────────────────────────────────────────────────────────────
  * POST   /api/influencers/:id/agents/short-term/run   Trigger short-term agent (async)
+ * POST   /api/influencers/:id/agents/manual-post      Manual post: topic + optional script → video → tweet
  * POST   /api/influencers/:id/agents/long-term/run    Trigger long-term strategy agent (async)
  * GET    /api/influencers/:id/agents/logs              List all AgentLog entries (newest first)
  * GET    /api/influencers/:id/agents/logs/:logId       Get a single AgentLog with full steps
  * GET    /api/influencers/:id/agents/strategy          Get current long-term strategy doc
+ *
+ * ── Agent config & scheduling ─────────────────────────────────────────────────
+ * PATCH  /api/influencers/:id/agents/config            Update agentEnabled/intervalMins/postApprovalMode
+ * GET    /api/influencers/:id/agents/config            Get current agent config
+ *
+ * ── Approval workflow ─────────────────────────────────────────────────────────
+ * GET    /api/influencers/:id/agents/pending           List pending_approval XPost drafts
+ * POST   /api/influencers/:id/agents/posts/:postId/approve   Approve draft → post to X
+ * POST   /api/influencers/:id/agents/posts/:postId/reject    Reject draft
  */
 
 const { Router } = require('express')
@@ -769,16 +779,175 @@ router.get('/:id/agents/logs/:logId', async (req, res) => {
 
 /**
  * GET /api/influencers/:id/agents/strategy
- * Returns the current long-term strategy document.
  */
 router.get('/:id/agents/strategy', async (req, res) => {
   const inf = await getOwned(req.params.id, req.user.uid, res)
   if (!inf) return
+  return res.json({ strategy: inf.longTermStrategy ?? '', updatedAt: inf.longTermStrategyUpdatedAt ?? null })
+})
 
-  return res.json({
-    strategy: inf.longTermStrategy ?? '',
-    updatedAt: inf.longTermStrategyUpdatedAt ?? null,
+// ── Manual post ───────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/influencers/:id/agents/manual-post
+ * Body: { topic: string, customScript?: string }
+ *
+ * Immediately generates a video + posts to X (bypasses approval workflow).
+ * Returns { logId, status } — client polls logs/:logId for completion.
+ */
+router.post('/:id/agents/manual-post', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  if (!inf.xConnectionId) return res.status(400).json({ error: 'No X account connected' })
+  if (!inf.heygenAvatarId) return res.status(400).json({ error: 'No avatar selected — complete Step 3 first' })
+
+  const { topic, customScript } = req.body
+  if (!topic && !customScript) return res.status(400).json({ error: 'topic or customScript is required' })
+
+  const log = await AgentLog.create({
+    influencerId: inf._id.toString(),
+    uid: req.user.uid,
+    agentType: 'short_term',
+    status: 'running',
+    steps: [],
   })
+
+  runShortTermAgent(inf._id.toString(), req.user.uid, { manual: true, topic, customScript })
+    .catch(err => console.error('[route/manual-post]', err.message))
+
+  return res.status(202).json({ logId: log._id.toString(), status: 'running' })
+})
+
+// ── Agent config ──────────────────────────────────────────────────────────────
+
+/**
+ * GET /api/influencers/:id/agents/config
+ */
+router.get('/:id/agents/config', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+  return res.json({
+    agentEnabled: inf.agentEnabled,
+    agentIntervalMins: inf.agentIntervalMins,
+    postApprovalMode: inf.postApprovalMode,
+    agentLastRanAt: inf.agentLastRanAt,
+    agentNextRunAt: inf.agentNextRunAt,
+  })
+})
+
+/**
+ * PATCH /api/influencers/:id/agents/config
+ * Body: { agentEnabled?, agentIntervalMins?, postApprovalMode? }
+ *
+ * Enabling the agent also sets agentNextRunAt = now + intervalMins so the
+ * scheduler fires at the right time.
+ */
+router.patch('/:id/agents/config', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  const { agentEnabled, agentIntervalMins, postApprovalMode } = req.body
+
+  if (agentEnabled !== undefined) inf.agentEnabled = Boolean(agentEnabled)
+  if (agentIntervalMins !== undefined) inf.agentIntervalMins = Math.max(5, Number(agentIntervalMins))
+  if (postApprovalMode !== undefined && ['auto', 'approve'].includes(postApprovalMode)) {
+    inf.postApprovalMode = postApprovalMode
+  }
+
+  // If enabling, schedule the first run immediately
+  if (agentEnabled === true) {
+    inf.agentNextRunAt = new Date(Date.now() + (inf.agentIntervalMins ?? 30) * 60_000)
+  }
+
+  await inf.save()
+  return res.json({
+    agentEnabled: inf.agentEnabled,
+    agentIntervalMins: inf.agentIntervalMins,
+    postApprovalMode: inf.postApprovalMode,
+    agentNextRunAt: inf.agentNextRunAt,
+  })
+})
+
+// ── Approval workflow ─────────────────────────────────────────────────────────
+
+/**
+ * GET /api/influencers/:id/agents/pending
+ * Lists all pending_approval XPost drafts, newest first.
+ */
+router.get('/:id/agents/pending', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  const pending = await XPost.find({
+    influencerId: inf._id.toString(),
+    approvalStatus: 'pending_approval',
+  }).sort({ createdAt: -1 }).lean()
+
+  return res.json({ pending })
+})
+
+/**
+ * POST /api/influencers/:id/agents/posts/:postId/approve
+ * Approves a pending draft → posts tweet to X → marks as posted.
+ */
+router.post('/:id/agents/posts/:postId/approve', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  const draft = await XPost.findOne({ _id: req.params.postId, influencerId: inf._id.toString() })
+  if (!draft) return res.status(404).json({ error: 'Draft not found' })
+  if (draft.approvalStatus !== 'pending_approval') return res.status(400).json({ error: 'Post is not pending approval' })
+
+  const conn = await XConnection.findById(inf.xConnectionId)
+  if (!conn) return res.status(400).json({ error: 'X connection no longer exists — reconnect' })
+
+  // Get fresh token
+  const BUFFER = 5 * 60 * 1000
+  if (conn.tokenExpiresAt && Date.now() >= conn.tokenExpiresAt - BUFFER && conn.refreshToken) {
+    const params = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: conn.refreshToken })
+    if (!process.env.X_CLIENT_SECRET) params.append('client_id', process.env.X_CLIENT_ID)
+    const headers = { 'Content-Type': 'application/x-www-form-urlencoded' }
+    if (process.env.X_CLIENT_SECRET) headers.Authorization = 'Basic ' + Buffer.from(`${process.env.X_CLIENT_ID}:${process.env.X_CLIENT_SECRET}`).toString('base64')
+    const r = await fetch('https://api.x.com/2/oauth2/token', { method: 'POST', headers, body: params.toString() })
+    const d = await r.json()
+    conn.accessToken = d.access_token
+    if (d.refresh_token) conn.refreshToken = d.refresh_token
+    conn.tokenExpiresAt = d.expires_in ? Date.now() + d.expires_in * 1000 : null
+    await conn.save()
+  }
+
+  const postRes = await fetch('https://api.x.com/2/tweets', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${conn.accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: draft.text }),
+  })
+  const postData = await postRes.json()
+  if (!postRes.ok) return res.status(postRes.status).json({ error: 'X post failed', detail: postData })
+
+  draft.tweetId = postData.data.id
+  draft.postedAt = new Date()
+  draft.approvalStatus = 'posted'
+  await draft.save()
+
+  return res.json({ post: draft })
+})
+
+/**
+ * POST /api/influencers/:id/agents/posts/:postId/reject
+ * Rejects a pending draft — marks it as rejected.
+ */
+router.post('/:id/agents/posts/:postId/reject', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  const draft = await XPost.findOne({ _id: req.params.postId, influencerId: inf._id.toString() })
+  if (!draft) return res.status(404).json({ error: 'Draft not found' })
+  if (draft.approvalStatus !== 'pending_approval') return res.status(400).json({ error: 'Post is not pending approval' })
+
+  draft.approvalStatus = 'rejected'
+  await draft.save()
+  return res.json({ rejected: true })
 })
 
 module.exports = router

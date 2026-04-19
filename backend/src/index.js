@@ -11,6 +11,7 @@ require('./config/firebase')
 require('./config/storage')
 
 const { startAnalyticsPoller } = require('./jobs/analyticsPoller')
+const { startAgentScheduler }  = require('./jobs/agentScheduler')
 
 const PORT = process.env.PORT ?? 3000
 
@@ -44,6 +45,7 @@ async function start() {
     console.log(`Server listening on http://localhost:${PORT}`)
   })
   startAnalyticsPoller()
+  startAgentScheduler()
 }
 
 start().catch(err => {

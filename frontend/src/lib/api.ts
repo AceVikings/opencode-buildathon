@@ -44,6 +44,16 @@ export interface AvatarCandidate {
   previewVideoUrl: string | null
 }
 
+export type PostApprovalMode = 'auto' | 'approve'
+
+export interface AgentConfig {
+  agentEnabled: boolean
+  agentIntervalMins: number
+  postApprovalMode: PostApprovalMode
+  agentLastRanAt: string | null
+  agentNextRunAt: string | null
+}
+
 export interface Influencer {
   _id: string
   uid: string
@@ -60,9 +70,35 @@ export interface Influencer {
   selectedImageUrl: string | null
   selectedPreviewVideoUrl: string | null
   xConnectionId: string | null
+  longTermStrategy: string
+  longTermStrategyUpdatedAt: string | null
+  agentEnabled: boolean
+  agentIntervalMins: number
+  postApprovalMode: PostApprovalMode
+  agentLastRanAt: string | null
+  agentNextRunAt: string | null
   status: InfluencerStatus
   createdAt: string
   updatedAt: string
+}
+
+export type PostApprovalStatus = 'posted' | 'pending_approval' | 'rejected'
+
+export interface XPostFull {
+  _id: string
+  influencerId: string
+  tweetId: string
+  text: string
+  postedAt: string | null
+  agentDecisionSummary: string | null
+  heygenVideoId: string | null
+  heygenVideoUrl: string | null
+  heygenThumbUrl: string | null
+  videoScript: string | null
+  approvalStatus: PostApprovalStatus
+  metrics: import('./api').PostMetrics
+  metricsUpdatedAt: string | null
+  createdAt: string
 }
 
 // ── Influencer API calls ─────────────────────────────────────────────────────
@@ -417,5 +453,75 @@ export async function getTrends(opts?: {
     const err = await res.json().catch(() => ({}))
     throw new Error((err as { error?: string }).error ?? 'Failed to fetch trends')
   }
+  return res.json()
+}
+
+// ── Agent config ──────────────────────────────────────────────────────────────
+
+export async function getAgentConfig(influencerId: string): Promise<AgentConfig> {
+  const res = await apiFetch(`/influencers/${influencerId}/agents/config`)
+  if (!res.ok) throw new Error('Failed to fetch agent config')
+  return res.json()
+}
+
+export async function updateAgentConfig(influencerId: string, config: Partial<AgentConfig>): Promise<AgentConfig> {
+  const res = await apiFetch(`/influencers/${influencerId}/agents/config`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error((err as { error?: string }).error ?? 'Failed to update config')
+  }
+  return res.json()
+}
+
+// ── Manual post ───────────────────────────────────────────────────────────────
+
+export async function requestManualPost(influencerId: string, opts: {
+  topic: string
+  customScript?: string
+}): Promise<{ logId: string; status: string }> {
+  const res = await apiFetch(`/influencers/${influencerId}/agents/manual-post`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(opts),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error((err as { error?: string }).error ?? 'Failed to start manual post')
+  }
+  return res.json()
+}
+
+// ── Approval workflow ─────────────────────────────────────────────────────────
+
+export async function getPendingPosts(influencerId: string): Promise<{ pending: XPostFull[] }> {
+  const res = await apiFetch(`/influencers/${influencerId}/agents/pending`)
+  if (!res.ok) throw new Error('Failed to fetch pending posts')
+  return res.json()
+}
+
+export async function approvePost(influencerId: string, postId: string): Promise<{ post: XPostFull }> {
+  const res = await apiFetch(`/influencers/${influencerId}/agents/posts/${postId}/approve`, { method: 'POST' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error((err as { error?: string }).error ?? 'Failed to approve post')
+  }
+  return res.json()
+}
+
+export async function rejectPost(influencerId: string, postId: string): Promise<{ rejected: boolean }> {
+  const res = await apiFetch(`/influencers/${influencerId}/agents/posts/${postId}/reject`, { method: 'POST' })
+  if (!res.ok) throw new Error('Failed to reject post')
+  return res.json()
+}
+
+// ── Full posts list (all statuses) ────────────────────────────────────────────
+
+export async function getInfluencerPostsFull(influencerId: string): Promise<{ posts: XPostFull[] }> {
+  const res = await apiFetch(`/influencers/${influencerId}/x/posts`)
+  if (!res.ok) throw new Error('Failed to fetch posts')
   return res.json()
 }

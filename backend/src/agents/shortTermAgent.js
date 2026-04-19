@@ -1,23 +1,19 @@
 /**
  * Short-Term Agent
  *
- * Autonomous posting agent that runs on demand for a specific influencer.
- *
  * Pipeline:
- *  1. Fetch current X trends (personalized if X connected, else worldwide WOEID=1)
- *  2. Web-search for post ideas relevant to the trends + influencer niche/goal
- *  3. Read the influencer's long-term strategy guidance (from LongTermAgent)
- *  4. Reason about what to post (ReAct loop — tools: get_trends, web_search, draft_post)
- *  5. Post the final tweet to X via the influencer's connected account
- *  6. Save an AgentLog with full reasoning trace + decision summary
- *  7. Stamp the agentDecisionSummary on the resulting XPost
+ *  1. Fetch X trends (personalised if connected, else worldwide)
+ *  2. Web-search for content angles
+ *  3. Read long-term strategy guidance
+ *  4. ReAct loop decides on tweet text + video script
+ *  5. Generate HeyGen video from influencer's avatar + script
+ *  6. Poll HeyGen until video is ready
+ *  7a. postApprovalMode === 'auto'    → post tweet + video to X immediately
+ *  7b. postApprovalMode === 'approve' → save as pending_approval, no X post yet
+ *  8. Write AgentLog with full trace
  *
- * Tools available to the agent:
- *   get_trends       — fetch X trends for this influencer (personalized or WOEID)
- *   web_search       — search the web for post inspiration / competitor content
- *   draft_post       — signal the agent's final tweet text (terminates the loop)
- *
- * The agent is given a hard cap of 10 reasoning steps to prevent runaway loops.
+ * Manual post (opts.manual = true) skips the ReAct trend-research loop and
+ * uses opts.topic + opts.customScript directly to generate the video/tweet.
  */
 
 const { z } = require('zod')
@@ -25,10 +21,11 @@ const { DynamicStructuredTool } = require('@langchain/core/tools')
 const { createReactAgent } = require('@langchain/langgraph/prebuilt')
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai')
 const { HumanMessage } = require('@langchain/core/messages')
-const AgentLog = require('../models/AgentLog')
-const XPost = require('../models/XPost')
+const AgentLog   = require('../models/AgentLog')
+const XPost      = require('../models/XPost')
 const XConnection = require('../models/XConnection')
 const Influencer = require('../models/Influencer')
+const { createVideo, getVideoStatus } = require('../services/heygenService')
 
 const MAX_STEPS = 10
 const BEARER = () => process.env.X_BEARER_TOKEN
@@ -36,15 +33,15 @@ const X_BASE = 'https://api.x.com/2'
 
 // ── LLM ───────────────────────────────────────────────────────────────────────
 
-function getLLM() {
+function getLLM(temp = 0.7) {
   return new ChatGoogleGenerativeAI({
     model: 'gemini-3-flash-preview',
     apiKey: process.env.GEMINI_API_KEY,
-    temperature: 0.7,
+    temperature: temp,
   })
 }
 
-// ── Token refresh util ────────────────────────────────────────────────────────
+// ── X token refresh ───────────────────────────────────────────────────────────
 
 async function getValidToken(conn) {
   const BUFFER = 5 * 60 * 1000
@@ -65,128 +62,205 @@ async function getValidToken(conn) {
   return conn.accessToken
 }
 
-// ── Tool: get_trends ──────────────────────────────────────────────────────────
+// ── Fetch current trends (for context injection) ───────────────────────────
 
-function makeTrendsTool(influencer, conn) {
+async function fetchTrends(conn) {
+  try {
+    if (conn) {
+      const token = await getValidToken(conn)
+      const res = await fetch(
+        `${X_BASE}/users/personalized_trends?personalized_trend.fields=trend_name,post_count,category,trending_since`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      )
+      const json = await res.json()
+      return (json.data ?? []).slice(0, 15).map(t =>
+        `${t.trend_name} (${t.post_count ?? '?'} posts, category: ${t.category ?? 'general'})`
+      ).join('\n')
+    }
+    const bearer = BEARER()
+    if (!bearer) return ''
+    const res = await fetch(
+      `${X_BASE}/trends/by/woeid/1?max_trends=15&trend.fields=trend_name,tweet_count`,
+      { headers: { Authorization: `Bearer ${bearer}` } }
+    )
+    const json = await res.json()
+    return (json.data ?? []).map(t => `${t.trend_name} (${t.tweet_count ?? '?'} tweets)`).join('\n')
+  } catch { return '' }
+}
+
+// ── Script generation (Gemini) ────────────────────────────────────────────────
+
+/**
+ * Generate a casual, natural video script (15–30 s) and a matching tweet caption.
+ *
+ * @param {object} params
+ * @returns {Promise<{ script: string, tweetText: string, reasoning: string }>}
+ */
+async function generateScriptAndTweet({ inf, topic, trends, guidance, brandBrief }) {
+  const llm = getLLM(0.8)
+
+  const prompt = `You are a scriptwriter for an AI social media influencer.
+
+Influencer: "${inf.name}"
+Niche: ${inf.niche || 'lifestyle'}
+Goal: ${inf.goal || 'grow audience'}
+Bio: ${inf.bio || ''}
+
+Brand brief:
+${brandBrief || 'Not available.'}
+
+Long-term strategy guidance:
+${guidance || 'No guidance yet — use niche and goal.'}
+
+${trends ? `Current trending topics on X:\n${trends}\n` : ''}
+${topic ? `Requested topic: ${topic}\n` : ''}
+
+Generate:
+1. VIDEO_SCRIPT: A casual, natural-sounding spoken script for a 15–30 second vertical video.
+   - Write it as the influencer speaking directly to camera
+   - Conversational, not scripted-sounding — use natural pauses, contractions
+   - Must land within 15–30 seconds when spoken at normal pace (~130 wpm = 32–65 words)
+   - DO NOT include stage directions, timecodes, or action notes
+   - Pick the most relevant trending angle to the niche, or use the requested topic
+
+2. TWEET_TEXT: A tweet caption to accompany the video post (max 240 chars to leave room for links)
+
+3. REASONING: 1–2 sentences on why this topic + angle will perform well
+
+Reply ONLY in this JSON (no markdown fences):
+{"script":"...","tweetText":"...","reasoning":"..."}`
+
+  const res = await llm.invoke([new HumanMessage(prompt)])
+  const raw = typeof res.content === 'string' ? res.content : JSON.stringify(res.content)
+  const cleaned = raw.replace(/```json\n?/g, '').replace(/```\n?/g, '').trim()
+
+  try {
+    return JSON.parse(cleaned)
+  } catch {
+    // Graceful regex fallback
+    const s = cleaned.match(/"script"\s*:\s*"([\s\S]*?)(?<!\\)"/)
+    const t = cleaned.match(/"tweetText"\s*:\s*"([\s\S]*?)(?<!\\)"/)
+    const r = cleaned.match(/"reasoning"\s*:\s*"([\s\S]*?)(?<!\\)"/)
+    return {
+      script: s?.[1]?.replace(/\\n/g, '\n') ?? `Talking about trends in ${inf.niche}.`,
+      tweetText: t?.[1] ?? `New post from ${inf.name}`,
+      reasoning: r?.[1] ?? 'Trend-aligned content',
+    }
+  }
+}
+
+// ── ReAct tools (autonomous mode) ─────────────────────────────────────────────
+
+function makeTrendsTool(conn) {
   return new DynamicStructuredTool({
     name: 'get_trends',
-    description: 'Fetch current trending topics on X. Returns trend names and post counts with timestamps.',
-    schema: z.object({
-      woeid: z.number().optional().describe('WOEID for location trends — default 1 (worldwide). Only used when no personal X token is available.'),
-    }),
+    description: 'Fetch current trending topics on X.',
+    schema: z.object({ woeid: z.number().optional() }),
     func: async ({ woeid = 1 }) => {
       try {
-        // Use personalized trends if the influencer has an X connection
         if (conn) {
           const token = await getValidToken(conn)
-          const { data } = await axios.get(
+          const res = await fetch(
             `${X_BASE}/users/personalized_trends?personalized_trend.fields=trend_name,post_count,category,trending_since`,
             { headers: { Authorization: `Bearer ${token}` } }
           )
-          const trends = (data.data ?? []).map(t =>
-            `${t.trend_name} (${t.post_count ?? '?'} posts, since ${t.trending_since ?? 'now'}, category: ${t.category ?? 'general'})`
-          ).join('\n')
-          return `Personalized X trends for @${conn.xUsername}:\n${trends || 'No trends found.'}`
+          const json = await res.json()
+          return (json.data ?? []).map(t =>
+            `${t.trend_name} (${t.post_count ?? '?'} posts, category: ${t.category ?? 'general'})`
+          ).join('\n') || 'No trends found.'
         }
-
-        // Fall back to worldwide Bearer Token trends
-        const { data } = await axios.get(
+        const res = await fetch(
           `${X_BASE}/trends/by/woeid/${woeid}?max_trends=20&trend.fields=trend_name,tweet_count`,
           { headers: { Authorization: `Bearer ${BEARER()}` } }
         )
-        const trends = (data.data ?? []).map(t =>
-          `${t.trend_name} (${t.tweet_count ?? '?'} tweets)`
-        ).join('\n')
-        return `Worldwide X trends (WOEID ${woeid}):\n${trends || 'No trends found.'}`
-      } catch (err) {
-        return `Trends fetch failed: ${err?.response?.data?.detail ?? err.message}`
-      }
+        const json = await res.json()
+        return (json.data ?? []).map(t => `${t.trend_name} (${t.tweet_count ?? '?'} tweets)`).join('\n') || 'No trends found.'
+      } catch (err) { return `Trends fetch failed: ${err.message}` }
     },
   })
 }
 
-// ── Tool: web_search ──────────────────────────────────────────────────────────
-
 const webSearchTool = new DynamicStructuredTool({
   name: 'web_search',
-  description: 'Search the web for content ideas, competitor posts, or topic research. Returns titles and snippets.',
-  schema: z.object({
-    query: z.string().describe('Search query'),
-    numResults: z.number().optional().describe('Number of results to return (1–5, default 3)'),
-  }),
+  description: 'Search the web for content ideas or inspiration.',
+  schema: z.object({ query: z.string(), numResults: z.number().optional() }),
   func: async ({ query, numResults = 3 }) => {
     try {
-      // Use Google Custom Search API if configured, otherwise DuckDuckGo instant answer
       const GOOGLE_CSE_KEY = process.env.GOOGLE_CSE_KEY
       const GOOGLE_CSE_ID  = process.env.GOOGLE_CSE_ID
-
       if (GOOGLE_CSE_KEY && GOOGLE_CSE_ID) {
         const qs = new URLSearchParams({ key: GOOGLE_CSE_KEY, cx: GOOGLE_CSE_ID, q: query, num: String(Math.min(numResults, 5)) })
         const res = await fetch(`https://www.googleapis.com/customsearch/v1?${qs}`)
         const json = await res.json()
-        const results = (json.items ?? []).map(item =>
-          `**${item.title}**\n${item.snippet}\nURL: ${item.link}`
-        ).join('\n\n')
-        return results || 'No results found.'
+        return (json.items ?? []).map(i => `${i.title}\n${i.snippet}`).join('\n\n') || 'No results.'
       }
-
-      // Fallback: DuckDuckGo Instant Answer API
       const qs = new URLSearchParams({ q: query, format: 'json', no_html: '1', skip_disambig: '1' })
       const res = await fetch(`https://api.duckduckgo.com/?${qs}`)
       const json = await res.json()
-      const parts = []
-      if (json.AbstractText) parts.push(json.AbstractText)
-      if (json.RelatedTopics) {
-        json.RelatedTopics.slice(0, numResults).forEach(t => { if (t.Text) parts.push(t.Text) })
-      }
-      return parts.join('\n\n') || `No instant answer found for: ${query}`
-    } catch (err) {
-      return `Web search failed: ${err.message}`
-    }
+      const parts = [json.AbstractText, ...(json.RelatedTopics ?? []).slice(0, numResults).map(t => t.Text)].filter(Boolean)
+      return parts.join('\n\n') || `No results for: ${query}`
+    } catch (err) { return `Search failed: ${err.message}` }
   },
 })
 
-// ── Tool: draft_post ──────────────────────────────────────────────────────────
-// This is a signal tool — when the agent calls it, we know the final tweet text.
-// The agent must call this exactly once to finalise its decision.
-
-let _draftedTweet = null  // module-level slot, reset per run
-
-function makeDraftPostTool() {
-  _draftedTweet = null
+let _decision = null
+function makeDraftTool() {
+  _decision = null
   return new DynamicStructuredTool({
-    name: 'draft_post',
-    description: 'Finalise and submit your tweet. Call this ONCE with the final tweet text (max 280 chars). The tweet will be posted immediately.',
+    name: 'decide_topic',
+    description: 'Lock in the topic and angle for this post. Call exactly once.',
     schema: z.object({
-      text: z.string().max(280).describe('The final tweet text to post (max 280 characters)'),
-      reasoning: z.string().describe('1-2 sentence explanation of why this post will perform well given current trends and the brand strategy'),
+      topic: z.string().describe('What the post is about'),
+      reasoning: z.string().describe('Why this topic/angle will perform well'),
     }),
-    func: async ({ text, reasoning }) => {
-      _draftedTweet = { text: text.trim(), reasoning }
-      return `Tweet drafted: "${text.trim()}" — Reasoning: ${reasoning}`
+    func: async ({ topic, reasoning }) => {
+      _decision = { topic, reasoning }
+      return `Topic locked: "${topic}"`
     },
   })
 }
 
-// ── Step recorder helper ──────────────────────────────────────────────────────
+// ── HeyGen video poll ─────────────────────────────────────────────────────────
+
+async function waitForVideo(influencerId, videoId, maxWaitMs = 5 * 60_000) {
+  const deadline = Date.now() + maxWaitMs
+  let checkMs = 8_000
+  while (Date.now() < deadline) {
+    await new Promise(r => setTimeout(r, checkMs))
+    const status = await getVideoStatus(videoId)
+    if (status.status === 'completed') return status
+    if (status.status === 'failed') throw new Error(`HeyGen video ${videoId} failed: ${status.failureMessage}`)
+    checkMs = Math.min(checkMs * 1.5, 20_000)
+  }
+  throw new Error(`HeyGen video ${videoId} timed out after ${maxWaitMs / 1000}s`)
+}
+
+// ── Post tweet to X ────────────────────────────────────────────────────────────
+
+async function postToX(conn, tweetText) {
+  const accessToken = await getValidToken(conn)
+  const res = await fetch('https://api.x.com/2/tweets', {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ text: tweetText }),
+  })
+  const data = await res.json()
+  if (!res.ok) throw new Error(`X post failed: ${JSON.stringify(data)}`)
+  return data.data
+}
+
+// ── Step recorder ─────────────────────────────────────────────────────────────
 
 function extractSteps(messages) {
   const steps = []
   for (const msg of messages) {
     const role = msg.constructor?.name ?? msg._getType?.() ?? 'unknown'
     if (role === 'HumanMessage') continue
-
     const content = typeof msg.content === 'string' ? msg.content : JSON.stringify(msg.content)
-
     if (role === 'AIMessage' || role === 'ai') {
-      // Check for tool calls
       if (msg.tool_calls?.length > 0) {
-        for (const tc of msg.tool_calls) {
-          steps.push({ type: 'tool_call', tool: tc.name, content: JSON.stringify(tc.args) })
-        }
-      } else if (content.trim()) {
-        steps.push({ type: 'thought', tool: null, content })
-      }
+        for (const tc of msg.tool_calls) steps.push({ type: 'tool_call', tool: tc.name, content: JSON.stringify(tc.args) })
+      } else if (content.trim()) steps.push({ type: 'thought', tool: null, content })
     } else if (role === 'ToolMessage' || role === 'tool') {
       steps.push({ type: 'tool_result', tool: msg.name ?? null, content })
     }
@@ -197,111 +271,145 @@ function extractSteps(messages) {
 // ── Main export ───────────────────────────────────────────────────────────────
 
 /**
- * Run the short-term agent for a specific influencer.
- * Creates an AgentLog, runs the ReAct loop, posts the tweet, returns the log.
+ * Run the short-term agent.
  *
  * @param {string} influencerId
- * @param {string} uid  Firebase uid of the owning user
- * @returns {Promise<import('../models/AgentLog').default>}
+ * @param {string} uid
+ * @param {object} [opts]
+ * @param {boolean} [opts.manual]       - skip ReAct, use opts.topic directly
+ * @param {string}  [opts.topic]        - topic override for manual posts
+ * @param {string}  [opts.customScript] - fully custom script (skips Gemini generation)
+ * @returns {Promise<import('../models/AgentLog')>}
  */
-async function runShortTermAgent(influencerId, uid) {
+async function runShortTermAgent(influencerId, uid, opts = {}) {
   const started = Date.now()
 
   const log = await AgentLog.create({
-    influencerId,
-    uid,
-    agentType: 'short_term',
-    status: 'running',
-    steps: [],
+    influencerId, uid, agentType: 'short_term', status: 'running', steps: [],
   })
 
   try {
     const inf = await Influencer.findById(influencerId)
     if (!inf) throw new Error('Influencer not found')
+    if (!inf.heygenAvatarId) throw new Error('No HeyGen avatar selected — complete Step 3 first')
 
-    const conn = inf.xConnectionId
-      ? await XConnection.findById(inf.xConnectionId)
-      : null
-
+    const conn = inf.xConnectionId ? await XConnection.findById(inf.xConnectionId) : null
     if (!conn) throw new Error('No X account connected to this influencer')
 
-    // Build tools for this run
-    const draftTool = makeDraftPostTool()
-    const tools = [makeTrendsTool(inf, conn), webSearchTool, draftTool]
+    const steps = []
+    let topic = opts.topic ?? null
+    let reasoning = ''
 
-    const agent = createReactAgent({
-      llm: getLLM(),
-      tools,
-      maxIterations: MAX_STEPS,
-    })
+    // ── Phase 1: decide topic ──────────────────────────────────────────────
+    if (opts.manual && topic) {
+      reasoning = `Manual post requested on topic: ${topic}`
+      steps.push({ type: 'decision', tool: null, content: reasoning })
+    } else {
+      // ReAct loop to pick topic
+      const draftTool = makeDraftTool()
+      const agent = createReactAgent({ llm: getLLM(), tools: [makeTrendsTool(conn), webSearchTool, draftTool], maxIterations: MAX_STEPS })
 
-    const systemPrompt = `You are an autonomous social media agent managing the X (Twitter) account for an AI influencer named "${inf.name}".
+      const systemPrompt = `You are an autonomous content strategist for AI influencer "${inf.name}" (niche: ${inf.niche || 'lifestyle'}, goal: ${inf.goal || 'grow audience'}).
 
-Influencer profile:
-- Niche: ${inf.niche || 'lifestyle'}
-- Current goal: ${inf.goal || 'grow audience and engagement'}
-- Bio: ${inf.bio || 'Not set'}
-
-Long-term brand strategy guidance:
-${inf.longTermStrategy || 'No long-term strategy set yet — use your best judgement based on the niche and goal.'}
+Long-term strategy:
+${inf.longTermStrategy || 'Not set yet.'}
 
 Your task:
-1. Use get_trends to fetch current trending topics on X
-2. Use web_search to research 1-2 angles that connect a trend to this influencer's niche and goal
-3. Decide on the best tweet to post — it must be on-brand, timely, and likely to drive engagement
-4. Call draft_post ONCE with your final tweet text and a brief reasoning
+1. Call get_trends to see what's trending on X right now
+2. Optionally call web_search once to research an angle
+3. Call decide_topic ONCE with the best topic to post about today
 
-Rules:
-- Tweet must be ≤280 characters
-- Be authentic to the influencer's voice — not corporate-speak
-- Prioritise trends relevant to the niche
-- Do not use placeholder text or hashtag spam`
+Keep it relevant to the niche. Be specific — not just "tech" but "Apple's new chip announcement".`
 
-    const result = await agent.invoke({
-      messages: [new HumanMessage(systemPrompt)],
-    })
+      const result = await agent.invoke({ messages: [new HumanMessage(systemPrompt)] })
+      steps.push(...extractSteps(result.messages))
 
-    const steps = extractSteps(result.messages)
-
-    if (!_draftedTweet) {
-      throw new Error('Agent completed without calling draft_post — no tweet was composed')
+      if (!_decision) throw new Error('Agent did not call decide_topic')
+      topic = _decision.topic
+      reasoning = _decision.reasoning
     }
 
-    // Post the tweet
-    const accessToken = await getValidToken(conn)
-    const tweetRes = await fetch('https://api.x.com/2/tweets', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ text: _draftedTweet.text }),
-    })
-    const tweetResp = await tweetRes.json()
-    const tweet = tweetResp.data
+    steps.push({ type: 'thought', tool: null, content: `Topic decided: "${topic}" — ${reasoning}` })
 
-    // Persist XPost with decision summary
+    // ── Phase 2: generate script + tweet text ──────────────────────────────
+    const trends = await fetchTrends(conn)
+    let script, tweetText
+
+    if (opts.customScript) {
+      script = opts.customScript
+      tweetText = opts.topic ?? `New post from ${inf.name}`
+    } else {
+      const gen = await generateScriptAndTweet({
+        inf,
+        topic,
+        trends,
+        guidance: inf.longTermStrategy,
+        brandBrief: inf.brandBrief,
+      })
+      script = gen.script
+      tweetText = gen.tweetText
+      if (!reasoning) reasoning = gen.reasoning
+    }
+
+    steps.push({ type: 'thought', tool: null, content: `Script (${script.split(' ').length} words): "${script.slice(0, 120)}…"` })
+    steps.push({ type: 'thought', tool: null, content: `Tweet: "${tweetText}"` })
+
+    // ── Phase 3: generate HeyGen video ────────────────────────────────────
+    steps.push({ type: 'tool_call', tool: 'heygen_video', content: `Generating video for avatar ${inf.heygenAvatarId}` })
+    const { videoId } = await createVideo({
+      avatarId: inf.heygenAvatarId,
+      script,
+      title: `${inf.name} — ${topic?.slice(0, 40) ?? 'auto post'}`,
+      aspectRatio: '9:16',
+      resolution: '1080p',
+      expressiveness: 'high',
+      motionPrompt: 'natural presenting gestures, energetic but casual',
+    })
+
+    steps.push({ type: 'tool_result', tool: 'heygen_video', content: `Video job started: ${videoId}` })
+
+    const videoStatus = await waitForVideo(influencerId, videoId)
+    steps.push({ type: 'tool_result', tool: 'heygen_video', content: `Video ready: ${videoStatus.videoUrl}` })
+
+    // ── Phase 4: post or hold for approval ────────────────────────────────
+    const approvalMode = opts.manual ? 'auto' : (inf.postApprovalMode ?? 'approve')
+    let tweetId = null
+    let approvalStatus = 'pending_approval'
+
+    if (approvalMode === 'auto') {
+      const tweet = await postToX(conn, tweetText)
+      tweetId = tweet.id
+      approvalStatus = 'posted'
+      steps.push({ type: 'decision', tool: null, content: `Auto-posted tweet ${tweetId}: "${tweetText}"` })
+    } else {
+      steps.push({ type: 'decision', tool: null, content: `Held for approval: "${tweetText}" — video: ${videoStatus.videoUrl}` })
+    }
+
+    // ── Persist XPost ──────────────────────────────────────────────────────
     const xpost = await XPost.create({
       influencerId: inf._id.toString(),
       uid,
-      tweetId: tweet.id,
-      text: tweet.text ?? _draftedTweet.text,
-      postedAt: new Date(),
-      agentDecisionSummary: _draftedTweet.reasoning,
-    })
-
-    // Finalise log
-    steps.push({
-      type: 'decision',
-      tool: null,
-      content: `Posted tweet: "${_draftedTweet.text}" | Reasoning: ${_draftedTweet.reasoning}`,
+      tweetId: tweetId ?? `draft_${Date.now()}`,
+      text: tweetText,
+      postedAt: tweetId ? new Date() : null,
+      agentDecisionSummary: reasoning,
+      heygenVideoId: videoId,
+      heygenVideoUrl: videoStatus.videoUrl,
+      heygenThumbUrl: videoStatus.thumbnailUrl,
+      videoScript: script,
+      approvalStatus,
     })
 
     log.steps = steps
-    log.summary = `Posted: "${_draftedTweet.text}" — ${_draftedTweet.reasoning}`
+    log.summary = approvalMode === 'auto'
+      ? `Posted: "${tweetText}"`
+      : `Pending approval: "${tweetText}" — video ready`
     log.xPostId = xpost._id.toString()
     log.status = 'completed'
     log.durationMs = Date.now() - started
     await log.save()
 
-    console.log(`[ShortTermAgent] ✓ influencer=${influencerId} tweet="${_draftedTweet.text.slice(0, 50)}…"`)
+    console.log(`[ShortTermAgent] ✓ influencer=${influencerId} mode=${approvalMode} topic="${topic?.slice(0, 40)}"`)
     return log
   } catch (err) {
     log.status = 'failed'
