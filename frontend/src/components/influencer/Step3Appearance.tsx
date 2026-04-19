@@ -263,6 +263,74 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
         </div>
       )}
 
+      {/* ── Voice picker ── */}
+      <div className="flex flex-col gap-3">
+        <div className="flex items-center justify-between">
+          <label className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">
+            Voice
+          </label>
+          {/* Gender filter */}
+          <div className="flex gap-1">
+            {(['all', 'female', 'male'] as const).map(g => (
+              <button key={g} type="button" onClick={() => setGenderFilter(g)}
+                className={`font-inter text-[9px] uppercase tracking-[0.15em] px-3 py-1 border transition-colors ${genderFilter === g ? 'bg-charcoal text-white border-charcoal' : 'text-warm-grey border-charcoal/20 hover:border-charcoal/40'}`}>
+                {g === 'all' ? 'All' : g === 'female' ? 'Female' : 'Male'}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {voicesLoading ? (
+          <p className="font-inter text-[11px] text-warm-grey animate-pulse">Loading voices…</p>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 max-h-64 overflow-y-auto pr-1">
+            {voices
+              .filter(v => genderFilter === 'all' || v.gender === genderFilter)
+              .map(v => {
+                const isSelected = selectedVoiceId === v.id
+                const isPlaying = playingId === v.id
+                return (
+                  <button
+                    key={v.id}
+                    type="button"
+                    onClick={() => setSelectedVoiceId(v.id)}
+                    className={`flex items-center justify-between gap-3 px-4 py-3 border text-left transition-all duration-150 ${isSelected ? 'border-gold bg-gold/5' : 'border-charcoal/10 hover:border-charcoal/30'}`}
+                  >
+                    <div className="flex items-center gap-2.5 min-w-0">
+                      {isSelected
+                        ? <div className="w-3 h-3 bg-gold flex-shrink-0 flex items-center justify-center"><span className="text-white text-[7px] font-bold">✓</span></div>
+                        : <div className={`w-3 h-3 rounded-full flex-shrink-0 border-2 ${isSelected ? 'border-gold bg-gold' : 'border-charcoal/20'}`} />
+                      }
+                      <div className="min-w-0">
+                        <p className="font-inter text-[12px] text-charcoal truncate">{v.name}</p>
+                        <p className="font-inter text-[9px] uppercase tracking-[0.15em] text-warm-grey/60">{v.gender}</p>
+                      </div>
+                    </div>
+                    {/* Play preview */}
+                    <button
+                      type="button"
+                      onClick={e => { e.stopPropagation(); playPreview(v) }}
+                      className={`flex-shrink-0 w-7 h-7 flex items-center justify-center border transition-colors ${isPlaying ? 'border-gold bg-gold text-white' : 'border-charcoal/20 text-warm-grey hover:border-charcoal/50 hover:text-charcoal'}`}
+                      title={isPlaying ? 'Stop' : 'Preview voice'}
+                    >
+                      <span className="text-[10px]">{isPlaying ? '■' : '▶'}</span>
+                    </button>
+                  </button>
+                )
+              })}
+          </div>
+        )}
+
+        {selectedVoiceId && (() => {
+          const v = voices.find(x => x.id === selectedVoiceId)
+          return v ? (
+            <p className="font-inter text-[10px] text-warm-grey/70">
+              Selected: <span className="text-charcoal">{v.name}</span>
+            </p>
+          ) : null
+        })()}
+      </div>
+
       {/* ── Existing avatar (resume) ── */}
       {!generating && displayCandidates.length === 0 && influencer.selectedImageUrl && (
         <div className="flex flex-col gap-3">
@@ -395,13 +463,13 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
       {/* ── Complete ── */}
       <div className="flex items-center justify-between pt-2">
         <p className="font-inter text-[11px] text-warm-grey/60">
-          {selectedAvatarId
-            ? 'Avatar selected — ready to complete.'
-            : influencer.heygenAvatarId
-            ? 'Using existing avatar.'
-            : 'Generate and select an avatar to finish.'}
+          {!selectedAvatarId && !influencer.heygenAvatarId
+            ? 'Generate and select an avatar to finish.'
+            : !selectedVoiceId
+            ? 'Choose a voice to complete.'
+            : 'Avatar & voice selected — ready to complete.'}
         </p>
-        <button onClick={handleSelect} disabled={selecting || (!selectedAvatarId && !influencer.heygenAvatarId)}
+        <button onClick={handleSelect} disabled={selecting || (!selectedAvatarId && !influencer.heygenAvatarId) || !selectedVoiceId}
           className="group relative overflow-hidden inline-flex items-center h-10 px-8 bg-charcoal text-white font-inter text-[10px] uppercase tracking-[0.22em] disabled:opacity-40">
           <span className="absolute inset-0 bg-gold -translate-x-full group-hover:translate-x-0 transition-transform duration-500"
             style={{ transitionTimingFunction: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)' }} aria-hidden="true" />
