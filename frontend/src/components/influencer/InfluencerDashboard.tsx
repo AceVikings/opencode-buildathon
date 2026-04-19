@@ -7,6 +7,7 @@ import type {
   PostApprovalMode,
   XPostFull,
 } from '../../lib/api'
+import { Markdown } from '../Markdown'
 import {
   approvePost,
   getAgentConfig,
@@ -542,8 +543,8 @@ export function InfluencerDashboard() {
                   </button>
                 </div>
                 {strategy ? (
-                  <div className="bg-charcoal/[0.02] border border-charcoal/8 p-6">
-                    <pre className="font-inter text-[11px] text-charcoal/80 whitespace-pre-wrap leading-relaxed">{strategy}</pre>
+                  <div className="bg-charcoal/[0.02] border border-charcoal/8 px-6 pt-5 pb-6">
+                    <Markdown>{strategy}</Markdown>
                   </div>
                 ) : (
                   <div className="border border-dashed border-charcoal/15 py-12 flex flex-col items-center gap-3">
