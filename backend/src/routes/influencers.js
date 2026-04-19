@@ -500,59 +500,64 @@ router.post('/:id/x/media/upload', upload.single('media'), async (req, res) => {
   const xAuthHeader = { Authorization: `Bearer ${accessToken}` }
 
   if (isVideo) {
-    // ── Video: chunked upload via v2 endpoint POST /2/media/upload ────────────
+    // ── Video: chunked upload via v2 multipart endpoint ───────────────────────
     const CHUNK_SIZE = 5 * 1024 * 1024
     const fileBuffer = req.file.buffer
     const totalBytes = fileBuffer.length
 
-    // INIT
-    const initParams = new URLSearchParams({
-      command: 'INIT', total_bytes: String(totalBytes),
-      media_type: req.file.mimetype, media_category: 'tweet_video',
-    })
+    // INIT — multipart/form-data (not url-encoded)
+    const initForm = new FormData()
+    initForm.append('command', 'INIT')
+    initForm.append('total_bytes', String(totalBytes))
+    initForm.append('media_type', req.file.mimetype)
+    initForm.append('media_category', 'tweet_video')
     const initRes = await fetch('https://api.x.com/2/media/upload', {
-      method: 'POST',
-      headers: { ...xAuthHeader, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: initParams.toString(),
+      method: 'POST', headers: xAuthHeader, body: initForm,
     })
     const initData = await safeJson(initRes)
-    const mediaId = initData.media_id_string
+    if (!initRes.ok) return res.status(initRes.status).json({ error: 'X media INIT failed', detail: initData })
+    const mediaId = initData.data?.id
+    if (!mediaId) return res.status(500).json({ error: 'X media INIT returned no id', detail: initData })
 
     // APPEND
     let segmentIndex = 0
     for (let offset = 0; offset < totalBytes; offset += CHUNK_SIZE) {
-      const chunk = fileBuffer.slice(offset, offset + CHUNK_SIZE)
-      const form = new FormData()
-      form.append('command', 'APPEND')
-      form.append('media_id', mediaId)
-      form.append('segment_index', String(segmentIndex++))
-      form.append('media', new Blob([chunk], { type: req.file.mimetype }), req.file.originalname)
-      await fetch('https://api.x.com/2/media/upload', { method: 'POST', headers: xAuthHeader, body: form })
+      const chunk = fileBuffer.slice(offset, Math.min(offset + CHUNK_SIZE, totalBytes))
+      const appendForm = new FormData()
+      appendForm.append('command', 'APPEND')
+      appendForm.append('media_id', mediaId)
+      appendForm.append('segment_index', String(segmentIndex++))
+      appendForm.append('media', new Blob([chunk], { type: req.file.mimetype }), req.file.originalname)
+      const appendRes = await fetch('https://api.x.com/2/media/upload', { method: 'POST', headers: xAuthHeader, body: appendForm })
+      if (!appendRes.ok && appendRes.status !== 204) {
+        return res.status(appendRes.status).json({ error: `APPEND segment ${segmentIndex - 1} failed` })
+      }
     }
 
-    // FINALIZE
-    const finalizeParams = new URLSearchParams({ command: 'FINALIZE', media_id: mediaId })
+    // FINALIZE — multipart/form-data
+    const finalizeForm = new FormData()
+    finalizeForm.append('command', 'FINALIZE')
+    finalizeForm.append('media_id', mediaId)
     const finalizeRes = await fetch('https://api.x.com/2/media/upload', {
-      method: 'POST',
-      headers: { ...xAuthHeader, 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: finalizeParams.toString(),
+      method: 'POST', headers: xAuthHeader, body: finalizeForm,
     })
     const finalizeData = await safeJson(finalizeRes)
+    if (!finalizeRes.ok) return res.status(finalizeRes.status).json({ error: 'X media FINALIZE failed', detail: finalizeData })
 
-    // Poll for processing if needed
-    if (finalizeData.processing_info?.state === 'pending') {
-      let checkAfter = finalizeData.processing_info.check_after_secs ?? 5
-      for (let i = 0; i < 12; i++) {
+    // Poll STATUS
+    if (finalizeData.data?.processing_info) {
+      let checkAfter = finalizeData.data.processing_info.check_after_secs ?? 2
+      for (let i = 0; i < 30; i++) {
         await new Promise(r => setTimeout(r, checkAfter * 1000))
         const statusRes = await fetch(
           `https://api.x.com/2/media/upload?command=STATUS&media_id=${mediaId}`,
           { headers: xAuthHeader }
         )
         const statusData = await safeJson(statusRes)
-        const state = statusData.processing_info?.state
+        const state = statusData.data?.processing_info?.state
         if (state === 'succeeded') break
-        if (state === 'failed') return res.status(422).json({ error: 'X video processing failed', detail: statusData.processing_info })
-        checkAfter = statusData.processing_info?.check_after_secs ?? 5
+        if (state === 'failed') return res.status(422).json({ error: 'X video processing failed', detail: statusData.data?.processing_info })
+        checkAfter = statusData.data?.processing_info?.check_after_secs ?? 2
       }
     }
 
