@@ -1,0 +1,184 @@
+# GitHub Actions CI/CD Pipeline for Loque Backend
+# Deploys to Google Cloud Run on push to main branch
+
+name: CI/CD Pipeline — Backend
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "backend/src/**"
+      - "backend/Dockerfile"
+      - "backend/package.json"
+      - "backend/package-lock.json"
+      - "backend/.env.example"
+      - ".github/workflows/deploy-backend.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "backend/src/**"
+      - "backend/Dockerfile"
+      - "backend/package.json"
+      - "backend/package-lock.json"
+      - "backend/.env.example"
+      - ".github/workflows/deploy-backend.yml"
+
+env:
+  PROJECT_ID: ${{ secrets.GCP_PROJECT_ID }}
+  REGION: us-central1
+  SERVICE_NAME: loque-backend
+  REGISTRY: gcr.io
+
+jobs:
+  # ============ Test Job ============
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: backend
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: backend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run linting
+        run: npm run lint --if-present
+
+      - name: Run tests
+        run: npm test --if-present
+        env:
+          NODE_ENV: test
+
+  # ============ Build and Push Job ============
+  build:
+    name: Build and Push
+    needs: [test]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Configure Docker for GCR
+        run: gcloud auth configure-docker ${{ env.REGISTRY }} --quiet
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build and push backend image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          file: ./backend/Dockerfile
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+          sbom: false
+
+  # ============ Deploy Job ============
+  deploy:
+    name: Deploy to Cloud Run
+    needs: [build]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Deploy Backend to Cloud Run
+        id: deploy-backend
+        uses: google-github-actions/deploy-cloudrun@v2
+        with:
+          service: ${{ env.SERVICE_NAME }}
+          region: ${{ env.REGION }}
+          image: ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}:${{ github.sha }}
+          flags: |
+            --allow-unauthenticated
+            --memory=512Mi
+            --cpu=1
+            --min-instances=0
+            --max-instances=10
+            --concurrency=80
+            --timeout=300
+            --set-env-vars=NODE_ENV=production,GCP_PROJECT_ID=${{ env.PROJECT_ID }},GCP_BUCKET_NAME=${{ secrets.GCS_BUCKET_NAME }},FIREBASE_SERVICE_ACCOUNT_PATH=/secrets/firebase/sa.json,MONGODB_URI=${{ secrets.MONGODB_URI }}
+            --set-secrets=/secrets/firebase/sa.json=FIREBASE_SERVICE_ACCOUNT_LOQUE:latest,/secrets/gcs/sa.json=GCS_SERVICE_ACCOUNT_LOQUE:latest
+
+      - name: Show deployment URL
+        run: |
+          echo "Backend deployed to ${{ steps.deploy-backend.outputs.url }}"
+
+      - name: Verify deployment
+        run: |
+          echo "Waiting for service to be ready..."
+          sleep 10
+          curl -f "${{ steps.deploy-backend.outputs.url }}/api/health" || exit 1
+          echo "Deployment verified successfully!"
+
+  # ============ Cleanup Job ============
+  cleanup:
+    name: Cleanup Old Images
+    needs: deploy
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+
+    steps:
+      - name: Authenticate to Google Cloud
+        uses: google-github-actions/auth@v2
+        with:
+          credentials_json: ${{ secrets.GCP_SA_KEY }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+        with:
+          project_id: ${{ env.PROJECT_ID }}
+
+      - name: Delete old images (keep last 5)
+        run: |
+          gcloud container images list-tags ${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }} \
+          --filter="NOT tags:latest" \
+          --sort-by="~timestamp" \
+          --format="get(digest)" \
+          --limit=100 | tail -n +6 | while read digest; do
+            echo "Deleting image: $digest"
+            gcloud container images delete "${{ env.REGISTRY }}/${{ env.PROJECT_ID }}/${{ env.SERVICE_NAME }}@$digest" --quiet --force-delete-tags || true
+          done
+        continue-on-error: true

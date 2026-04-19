@@ -6,7 +6,9 @@ dist/
 *.local
 
 # Firebase / GCP credentials — NEVER commit these
+firebase.json
 gcp.json
+gcs.json
 *.gcp.json
 service-account.json
 firebase-admin*.json

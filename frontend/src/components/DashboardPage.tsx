@@ -1,6 +1,7 @@
 import { signOut } from 'firebase/auth'
 import { auth } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
+import { ConnectX } from './ConnectX'
 
 export function DashboardPage() {
   const { user } = useAuth()
@@ -102,22 +103,29 @@ export function DashboardPage() {
           </div>
 
           {/* Side panel */}
-          <div className="lg:col-span-4 bg-alabaster p-10 border-l border-charcoal/10">
-            <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey mb-8">
-              Recent Activity
-            </p>
-            <div className="flex flex-col gap-6">
-              {['Account created', 'Waitlist confirmed', 'Fleet ready to launch'].map((item, i) => (
-                <div key={item} className="flex items-start gap-4">
-                  <div className={`w-1.5 h-1.5 mt-1.5 flex-shrink-0 ${i === 0 ? 'bg-gold' : 'bg-charcoal/20'}`} />
-                  <div>
-                    <p className="font-inter text-[12px] text-charcoal">{item}</p>
-                    <p className="font-inter text-[10px] text-warm-grey/60 mt-0.5">
-                      {i === 0 ? 'Just now' : 'Pending'}
-                    </p>
+          <div className="lg:col-span-4 bg-alabaster border-l border-charcoal/10 flex flex-col">
+            <div className="p-10 pb-6">
+              <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey mb-8">
+                Recent Activity
+              </p>
+              <div className="flex flex-col gap-6">
+                {['Account created', 'Waitlist confirmed', 'Fleet ready to launch'].map((item, i) => (
+                  <div key={item} className="flex items-start gap-4">
+                    <div className={`w-1.5 h-1.5 mt-1.5 flex-shrink-0 ${i === 0 ? 'bg-gold' : 'bg-charcoal/20'}`} />
+                    <div>
+                      <p className="font-inter text-[12px] text-charcoal">{item}</p>
+                      <p className="font-inter text-[10px] text-warm-grey/60 mt-0.5">
+                        {i === 0 ? 'Just now' : 'Pending'}
+                      </p>
+                    </div>
                   </div>
-                </div>
-              ))}
+                ))}
+              </div>
+            </div>
+
+            {/* X account connection */}
+            <div className="mt-auto border-t border-charcoal/10">
+              <ConnectX />
             </div>
           </div>
         </div>
