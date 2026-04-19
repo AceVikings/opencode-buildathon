@@ -214,18 +214,23 @@ const webSearchTool = new DynamicStructuredTool({
 })
 
 let _decision = null
-function makeDraftTool() {
+function makeDraftTool(allowPostTypeChoice = false) {
   _decision = null
   return new DynamicStructuredTool({
     name: 'decide_topic',
-    description: 'Lock in the topic and angle for this post. Call exactly once.',
+    description: 'Lock in the topic, angle, and post format for this post. Call exactly once.',
     schema: z.object({
-      topic: z.string().describe('What the post is about'),
+      topic: z.string().describe('What the post is about — be specific'),
       reasoning: z.string().describe('Why this topic/angle will perform well'),
+      postType: z.enum(['text', 'video']).describe(
+        allowPostTypeChoice
+          ? 'Choose "video" for high-engagement visual content (demos, announcements, reactions) or "text" for quick takes, opinions, and thread-style content'
+          : 'Post format — always "video" unless overridden'
+      ),
     }),
-    func: async ({ topic, reasoning }) => {
-      _decision = { topic, reasoning }
-      return `Topic locked: "${topic}"`
+    func: async ({ topic, reasoning, postType }) => {
+      _decision = { topic, reasoning, postType }
+      return `Topic locked: "${topic}" as ${postType} post`
     },
   })
 }
@@ -286,9 +291,13 @@ function extractSteps(messages) {
  * @param {string} influencerId
  * @param {string} uid
  * @param {object} [opts]
- * @param {boolean} [opts.manual]       - skip ReAct, use opts.topic directly
- * @param {string}  [opts.topic]        - topic override for manual posts
- * @param {string}  [opts.customScript] - fully custom script (skips Gemini generation)
+ * @param {boolean} [opts.manual]         - skip ReAct, use opts.topic directly
+ * @param {string}  [opts.topic]          - topic override for manual posts
+ * @param {string}  [opts.customScript]   - fully custom script (skips Gemini generation)
+ * @param {'text'|'video'|'auto'} [opts.postType]
+ *   'text'  = tweet only, no video
+ *   'video' = always generate a video (default for auto-schedule)
+ *   'auto'  = agent decides based on topic/context
  * @returns {Promise<import('../models/AgentLog')>}
  */
 async function runShortTermAgent(influencerId, uid, opts = {}) {
@@ -309,15 +318,30 @@ async function runShortTermAgent(influencerId, uid, opts = {}) {
     const steps = []
     let topic = opts.topic ?? null
     let reasoning = ''
+    // Resolve post type — 'auto' defers to the agent's decide_topic call
+    const requestedPostType = opts.postType ?? 'video'  // default to video for scheduled runs
+    const allowAgentChoose = requestedPostType === 'auto'
 
-    // ── Phase 1: decide topic ──────────────────────────────────────────────
-    if (opts.manual && topic) {
-      reasoning = `Manual post requested on topic: ${topic}`
+    // ── Phase 1: decide topic (and post type if auto) ──────────────────────
+    if (opts.manual && topic && requestedPostType !== 'auto') {
+      // Manual post with explicit type — skip ReAct, just note the decision
+      reasoning = `Manual ${requestedPostType} post requested on topic: ${topic}`
       steps.push({ type: 'decision', tool: null, content: reasoning })
+      _decision = { topic, reasoning, postType: requestedPostType }
     } else {
-      // ReAct loop to pick topic
-      const draftTool = makeDraftTool()
-      const agent = createReactAgent({ llm: getLLM(), tools: [makeTrendsTool(conn), webSearchTool, draftTool], maxIterations: MAX_STEPS })
+      // ReAct loop — agent picks topic; also picks post type when allowAgentChoose
+      const draftTool = makeDraftTool(allowAgentChoose)
+      const agent = createReactAgent({
+        llm: getLLM(),
+        tools: [makeTrendsTool(conn), webSearchTool, draftTool],
+        maxIterations: MAX_STEPS,
+      })
+
+      const postTypeInstruction = allowAgentChoose
+        ? `4. In decide_topic, also choose postType:
+   - "video" for high-engagement visual moments (product demos, reactions, announcements)
+   - "text" for quick takes, opinions, hot takes, breaking news commentary`
+        : `Post format is fixed to "${requestedPostType}".`
 
       const systemPrompt = `You are an autonomous content strategist for an AI influencer.
 
@@ -336,10 +360,9 @@ ${inf.longTermStrategy || 'Not set yet.'}
 2. Optionally call web_search once to research the best angle
 3. Call decide_topic ONCE with the topic that:
    - Is most relevant to the influencer's niche AND current trends
-   - Fits their personality and brand voice (edgy, warm, authoritative — match the bio)
-   - Is specific and concrete — not "AI" but "OpenAI's new model and what it means for creators"
-
-The topic will be handed to a scriptwriter who will write in this influencer's exact voice.`
+   - Fits their personality and brand voice
+   - Is specific and concrete
+${postTypeInstruction}`
 
       const result = await agent.invoke({ messages: [new HumanMessage(systemPrompt)] })
       steps.push(...extractSteps(result.messages))
@@ -349,48 +372,70 @@ The topic will be handed to a scriptwriter who will write in this influencer's e
       reasoning = _decision.reasoning
     }
 
-    steps.push({ type: 'thought', tool: null, content: `Topic decided: "${topic}" — ${reasoning}` })
+    // Resolved post type: explicit > agent choice > default (video)
+    const resolvedPostType = (requestedPostType !== 'auto')
+      ? requestedPostType
+      : (_decision?.postType ?? 'video')
 
-    // ── Phase 2: generate script + tweet text ──────────────────────────────
+    steps.push({ type: 'thought', tool: null, content: `Topic: "${topic}" | Post type: ${resolvedPostType} | ${reasoning}` })
+
+    // ── Phase 2: generate tweet text (and script if video) ────────────────
     const trends = await fetchTrends(conn)
-    let script, tweetText
+    let script = null
+    let tweetText
 
-    if (opts.customScript) {
-      script = opts.customScript
-      tweetText = opts.topic ?? `New post from ${inf.name}`
-    } else {
+    if (resolvedPostType === 'text') {
+      // Text-only: generate just the tweet, no script needed
       const gen = await generateScriptAndTweet({
-        inf,
-        topic,
-        trends,
-        guidance: inf.longTermStrategy,
-        brandBrief: inf.brandBrief,
+        inf, topic, trends, guidance: inf.longTermStrategy, brandBrief: inf.brandBrief,
       })
-      script = gen.script
       tweetText = gen.tweetText
       if (!reasoning) reasoning = gen.reasoning
+      steps.push({ type: 'thought', tool: null, content: `Tweet text: "${tweetText}"` })
+    } else {
+      // Video: generate script + tweet caption
+      if (opts.customScript) {
+        script = opts.customScript
+        tweetText = opts.topic ?? `New post from ${inf.name}`
+      } else {
+        const gen = await generateScriptAndTweet({
+          inf, topic, trends, guidance: inf.longTermStrategy, brandBrief: inf.brandBrief,
+        })
+        script = gen.script
+        tweetText = gen.tweetText
+        if (!reasoning) reasoning = gen.reasoning
+      }
+      steps.push({ type: 'thought', tool: null, content: `Script (${script.split(' ').length} words): "${script.slice(0, 120)}…"` })
+      steps.push({ type: 'thought', tool: null, content: `Tweet: "${tweetText}"` })
     }
 
-    steps.push({ type: 'thought', tool: null, content: `Script (${script.split(' ').length} words): "${script.slice(0, 120)}…"` })
-    steps.push({ type: 'thought', tool: null, content: `Tweet: "${tweetText}"` })
+    // ── Phase 3: generate video (if video post) ────────────────────────────
+    let videoId = null
+    let videoUrl = null
+    let thumbUrl = null
 
-    // ── Phase 3: generate HeyGen video ────────────────────────────────────
-    steps.push({ type: 'tool_call', tool: 'heygen_video', content: `Generating video for avatar ${inf.heygenAvatarId}` })
-    const { videoId } = await createVideo({
-      avatarId: inf.heygenAvatarId,
-      voiceId:  inf.heygenVoiceId ?? undefined,
-      script,
-      title: `${inf.name} — ${topic?.slice(0, 40) ?? 'auto post'}`,
-      aspectRatio: '9:16',
-      resolution: '1080p',
-      expressiveness: 'high',
-      motionPrompt: 'natural presenting gestures, energetic but casual',
-    })
+    if (resolvedPostType === 'video') {
+      if (!inf.heygenAvatarId) throw new Error('No avatar selected — complete Step 3 first to enable video posts')
 
-    steps.push({ type: 'tool_result', tool: 'heygen_video', content: `Video job started: ${videoId}` })
+      steps.push({ type: 'tool_call', tool: 'video_generate', content: `Generating video for avatar ${inf.heygenAvatarId}` })
+      const created = await createVideo({
+        avatarId:      inf.heygenAvatarId,
+        voiceId:       inf.heygenVoiceId ?? undefined,
+        script,
+        title:         `${inf.name} — ${topic?.slice(0, 40) ?? 'auto post'}`,
+        aspectRatio:   '9:16',
+        resolution:    '1080p',
+        expressiveness: 'high',
+        motionPrompt:  'natural presenting gestures, energetic but casual',
+      })
+      videoId = created.videoId
+      steps.push({ type: 'tool_result', tool: 'video_generate', content: `Video job started: ${videoId}` })
 
-    const videoStatus = await waitForVideo(influencerId, videoId)
-    steps.push({ type: 'tool_result', tool: 'heygen_video', content: `Video ready: ${videoStatus.videoUrl}` })
+      const videoStatus = await waitForVideo(influencerId, videoId)
+      videoUrl = videoStatus.videoUrl
+      thumbUrl = videoStatus.thumbnailUrl
+      steps.push({ type: 'tool_result', tool: 'video_generate', content: `Video ready: ${videoUrl}` })
+    }
 
     // ── Phase 4: post or hold for approval ────────────────────────────────
     const approvalMode = opts.manual ? 'auto' : (inf.postApprovalMode ?? 'approve')
@@ -401,36 +446,36 @@ The topic will be handed to a scriptwriter who will write in this influencer's e
       const tweet = await postToX(conn, tweetText)
       tweetId = tweet.id
       approvalStatus = 'posted'
-      steps.push({ type: 'decision', tool: null, content: `Auto-posted tweet ${tweetId}: "${tweetText}"` })
+      steps.push({ type: 'decision', tool: null, content: `Auto-posted ${resolvedPostType} tweet ${tweetId}: "${tweetText}"` })
     } else {
-      steps.push({ type: 'decision', tool: null, content: `Held for approval: "${tweetText}" — video: ${videoStatus.videoUrl}` })
+      steps.push({ type: 'decision', tool: null, content: `Held for approval: "${tweetText}"${videoUrl ? ` — video: ${videoUrl}` : ''}` })
     }
 
     // ── Persist XPost ──────────────────────────────────────────────────────
     const xpost = await XPost.create({
       influencerId: inf._id.toString(),
       uid,
-      tweetId: tweetId ?? `draft_${Date.now()}`,
-      text: tweetText,
-      postedAt: tweetId ? new Date() : null,
+      tweetId:              tweetId ?? `draft_${Date.now()}`,
+      text:                 tweetText,
+      postedAt:             tweetId ? new Date() : null,
       agentDecisionSummary: reasoning,
-      heygenVideoId: videoId,
-      heygenVideoUrl: videoStatus.videoUrl,
-      heygenThumbUrl: videoStatus.thumbnailUrl,
-      videoScript: script,
+      heygenVideoId:        videoId,
+      heygenVideoUrl:       videoUrl,
+      heygenThumbUrl:       thumbUrl,
+      videoScript:          script,
       approvalStatus,
     })
 
     log.steps = steps
     log.summary = approvalMode === 'auto'
-      ? `Posted: "${tweetText}"`
-      : `Pending approval: "${tweetText}" — video ready`
+      ? `Posted ${resolvedPostType}: "${tweetText}"`
+      : `Pending approval (${resolvedPostType}): "${tweetText}"${videoUrl ? ' — video ready' : ''}`
     log.xPostId = xpost._id.toString()
     log.status = 'completed'
     log.durationMs = Date.now() - started
     await log.save()
 
-    console.log(`[ShortTermAgent] ✓ influencer=${influencerId} mode=${approvalMode} topic="${topic?.slice(0, 40)}"`)
+    console.log(`[ShortTermAgent] ✓ influencer=${influencerId} type=${resolvedPostType} mode=${approvalMode} topic="${topic?.slice(0, 40)}"`)
     return log
   } catch (err) {
     log.status = 'failed'

@@ -825,9 +825,14 @@ router.get('/:id/agents/strategy', async (req, res) => {
 
 /**
  * POST /api/influencers/:id/agents/manual-post
- * Body: { topic: string, customScript?: string }
+ * Body: {
+ *   topic: string,
+ *   postType?: 'text' | 'video' | 'auto'  (default 'video')
+ *   customScript?: string  (video only, skips Gemini script generation)
+ * }
  *
- * Immediately generates a video + posts to X (bypasses approval workflow).
+ * Manually triggers a post. Always bypasses approval (posts immediately).
+ * Text posts skip video generation entirely.
  * Returns { logId, status } — client polls logs/:logId for completion.
  */
 router.post('/:id/agents/manual-post', async (req, res) => {
@@ -835,10 +840,17 @@ router.post('/:id/agents/manual-post', async (req, res) => {
   if (!inf) return
 
   if (!inf.xConnectionId) return res.status(400).json({ error: 'No X account connected' })
-  if (!inf.heygenAvatarId) return res.status(400).json({ error: 'No avatar selected — complete Step 3 first' })
 
-  const { topic, customScript } = req.body
+  const { topic, customScript, postType = 'video' } = req.body
   if (!topic && !customScript) return res.status(400).json({ error: 'topic or customScript is required' })
+  if (!['text', 'video', 'auto'].includes(postType)) {
+    return res.status(400).json({ error: 'postType must be text, video, or auto' })
+  }
+
+  // Video posts need an avatar
+  if (postType === 'video' && !inf.heygenAvatarId) {
+    return res.status(400).json({ error: 'No avatar selected — complete Step 3 first to post videos' })
+  }
 
   const log = await AgentLog.create({
     influencerId: inf._id.toString(),
@@ -848,7 +860,7 @@ router.post('/:id/agents/manual-post', async (req, res) => {
     steps: [],
   })
 
-  runShortTermAgent(inf._id.toString(), req.user.uid, { manual: true, topic, customScript })
+  runShortTermAgent(inf._id.toString(), req.user.uid, { manual: true, topic, customScript, postType })
     .catch(err => console.error('[route/manual-post]', err.message))
 
   return res.status(202).json({ logId: log._id.toString(), status: 'running' })

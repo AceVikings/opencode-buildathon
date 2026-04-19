@@ -389,16 +389,21 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
       {/* ── Agent schedule (only once complete) ── */}
       {isComplete && (
         <div className="border border-charcoal/10">
-          <div className="px-6 py-4 border-b border-charcoal/10 flex items-center justify-between">
-            <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">Auto-posting schedule</p>
+          <div className="px-6 py-4 border-b border-charcoal/10 flex items-center gap-4">
+            <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey flex-1 min-w-0">Schedule</p>
             {/* Enable toggle */}
-            <button
-              onClick={() => saveConfig({ agentEnabled: !agentEnabled })}
-              disabled={configSaving}
-              className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${agentEnabled ? 'bg-charcoal' : 'bg-charcoal/20'}`}
-            >
-              <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${agentEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
-            </button>
+            <div className="flex items-center gap-2.5 flex-shrink-0">
+              <span className="font-inter text-[10px] text-warm-grey/70">
+                {agentEnabled ? 'On' : 'Off'}
+              </span>
+              <button
+                onClick={() => saveConfig({ agentEnabled: !agentEnabled })}
+                disabled={configSaving}
+                className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${agentEnabled ? 'bg-charcoal' : 'bg-charcoal/20'}`}
+              >
+                <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${agentEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
+              </button>
+            </div>
           </div>
           <div className="px-6 py-5 flex flex-col gap-4">
             {/* Interval */}

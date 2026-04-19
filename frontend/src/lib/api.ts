@@ -495,8 +495,11 @@ export async function updateAgentConfig(influencerId: string, config: Partial<Ag
 
 // ── Manual post ───────────────────────────────────────────────────────────────
 
+export type PostType = 'text' | 'video' | 'auto'
+
 export async function requestManualPost(influencerId: string, opts: {
   topic: string
+  postType?: PostType
   customScript?: string
 }): Promise<{ logId: string; status: string }> {
   const res = await apiFetch(`/influencers/${influencerId}/agents/manual-post`, {

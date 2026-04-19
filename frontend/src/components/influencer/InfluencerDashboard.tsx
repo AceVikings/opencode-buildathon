@@ -5,6 +5,7 @@ import type {
   AgentLogSummary,
   Influencer,
   PostApprovalMode,
+  PostType,
   XPostFull,
 } from '../../lib/api'
 import { Markdown } from '../Markdown'
@@ -611,8 +612,8 @@ export function InfluencerDashboard() {
                 </div>
                 <div className="p-5 flex flex-col gap-5">
                   {/* Enable toggle */}
-                  <div className="flex items-center justify-between">
-                    <div>
+                  <div className="flex items-center gap-4">
+                    <div className="flex-1 min-w-0">
                       <p className="font-inter text-[12px] text-charcoal">Auto-post</p>
                       <p className="font-inter text-[10px] text-warm-grey/60 mt-0.5">
                         {config.agentEnabled
@@ -623,7 +624,7 @@ export function InfluencerDashboard() {
                     <button
                       onClick={() => saveConfig({ agentEnabled: !config.agentEnabled })}
                       disabled={configSaving}
-                      className={`w-10 h-5 rounded-full transition-colors relative ${config.agentEnabled ? 'bg-charcoal' : 'bg-charcoal/20'}`}
+                      className={`w-10 h-5 rounded-full transition-colors relative flex-shrink-0 ${config.agentEnabled ? 'bg-charcoal' : 'bg-charcoal/20'}`}
                     >
                       <span className={`absolute top-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${config.agentEnabled ? 'translate-x-5' : 'translate-x-0.5'}`} />
                     </button>
