@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import { Link } from 'react-router-dom'
 
 const NAV_LINKS = ['Platform', 'Influencers', 'Pricing', 'Studio'] as const
 
@@ -45,8 +46,8 @@ export function Nav() {
         </div>
 
         {/* ── Desktop CTA ── */}
-        <a
-          href="#pricing"
+        <Link
+          to="/auth"
           className="hidden lg:inline-flex items-center gap-3 group relative overflow-hidden h-10 px-7 bg-charcoal text-white font-inter text-[10px] uppercase tracking-[0.22em] font-medium shadow-[0_4px_16px_rgba(0,0,0,0.15)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.25)] transition-shadow duration-500"
         >
           <span
@@ -55,7 +56,7 @@ export function Nav() {
             aria-hidden="true"
           />
           <span className="relative z-10">Get Started</span>
-        </a>
+        </Link>
 
         {/* ── Mobile toggle ── */}
         <button
@@ -80,8 +81,8 @@ export function Nav() {
               {link}
             </a>
           ))}
-          <a
-            href="#pricing"
+          <Link
+            to="/auth"
             className="inline-flex items-center justify-center group relative overflow-hidden h-11 px-8 bg-charcoal text-white font-inter text-[10px] uppercase tracking-[0.22em] font-medium mt-2"
             onClick={() => setMenuOpen(false)}
           >
@@ -90,7 +91,7 @@ export function Nav() {
               aria-hidden="true"
             />
             <span className="relative z-10">Get Started</span>
-          </a>
+          </Link>
         </div>
       )}
     </nav>

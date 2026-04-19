@@ -1,3 +1,4 @@
+import { Link } from 'react-router-dom'
 import heroImg from '../assets/hero.png'
 
 export function Hero() {
@@ -37,8 +38,8 @@ export function Hero() {
 
           {/* CTAs */}
           <div className="flex flex-col sm:flex-row gap-4">
-            <a
-              href="#pricing"
+            <Link
+              to="/auth"
               className="group relative overflow-hidden inline-flex items-center justify-center h-13 px-10 bg-charcoal text-white font-inter text-xs uppercase tracking-[0.22em] font-medium shadow-[0_4px_16px_rgba(0,0,0,0.15)] hover:shadow-[0_8px_24px_rgba(0,0,0,0.25)] transition-shadow duration-500"
             >
               <span
@@ -47,7 +48,7 @@ export function Hero() {
                 aria-hidden="true"
               />
               <span className="relative z-10">Create Your Fleet</span>
-            </a>
+            </Link>
             <a
               href="#platform"
               className="inline-flex items-center justify-center h-13 px-10 border border-charcoal text-charcoal font-inter text-xs uppercase tracking-[0.22em] font-medium hover:bg-charcoal hover:text-white transition-colors duration-500"
