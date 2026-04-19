@@ -176,12 +176,19 @@ function PostCard({
 
 // ── Manual post modal ─────────────────────────────────────────────────────────
 
+const POST_TYPE_OPTIONS: { value: PostType; label: string; description: string }[] = [
+  { value: 'video',  label: 'Video',            description: 'Agent writes a script and generates a short video post' },
+  { value: 'text',   label: 'Text',             description: 'Agent writes a tweet — no video, posts immediately' },
+  { value: 'auto',   label: 'Agent decides',    description: 'Agent picks the best format based on the topic and trends' },
+]
+
 function ManualPostModal({ influencerId, onClose, onStarted }: {
   influencerId: string
   onClose: () => void
   onStarted: (logId: string) => void
 }) {
   const [topic, setTopic] = useState('')
+  const [postType, setPostType] = useState<PostType>('video')
   const [customScript, setCustomScript] = useState('')
   const [useCustomScript, setUseCustomScript] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -189,12 +196,13 @@ function ManualPostModal({ influencerId, onClose, onStarted }: {
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
-    if (!topic.trim() && !customScript.trim()) { setError('Enter a topic or custom script'); return }
+    if (!topic.trim()) { setError('Enter a topic'); return }
     setLoading(true); setError(null)
     try {
       const { logId } = await requestManualPost(influencerId, {
-        topic: topic.trim() || customScript.trim().slice(0, 60),
-        customScript: useCustomScript ? customScript.trim() : undefined,
+        topic: topic.trim(),
+        postType,
+        customScript: (postType === 'video' && useCustomScript) ? customScript.trim() : undefined,
       })
       onStarted(logId)
       onClose()
@@ -202,55 +210,73 @@ function ManualPostModal({ influencerId, onClose, onStarted }: {
     finally { setLoading(false) }
   }
 
+  const selectedOption = POST_TYPE_OPTIONS.find(o => o.value === postType)!
+
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center"
       style={{ backgroundColor: 'rgba(26,26,26,0.5)', backdropFilter: 'blur(4px)' }}
       onClick={e => { if (e.target === e.currentTarget) onClose() }}>
       <div className="bg-alabaster w-full max-w-lg shadow-2xl" onClick={e => e.stopPropagation()}>
-        <div className="flex items-center justify-between px-7 py-5 border-b border-charcoal/10">
+        <div className="flex items-center justify-between gap-4 px-7 py-5 border-b border-charcoal/10">
           <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-charcoal">Request Post</p>
-          <button onClick={onClose} className="font-inter text-[10px] text-warm-grey hover:text-charcoal">Cancel</button>
+          <button onClick={onClose} className="font-inter text-[10px] text-warm-grey hover:text-charcoal flex-shrink-0">Cancel</button>
         </div>
         <form onSubmit={handleSubmit} className="p-7 flex flex-col gap-5">
           {error && <p className="font-inter text-[11px] text-red-600 border border-red-200 bg-red-50 px-4 py-3">{error}</p>}
 
+          {/* Post type selector */}
+          <div className="flex flex-col gap-2">
+            <label className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">Post type</label>
+            <div className="grid grid-cols-3 gap-2">
+              {POST_TYPE_OPTIONS.map(opt => (
+                <button key={opt.value} type="button" onClick={() => setPostType(opt.value)}
+                  className={`flex flex-col gap-1 px-3 py-3 border text-left transition-colors ${postType === opt.value ? 'border-charcoal bg-charcoal text-white' : 'border-charcoal/15 hover:border-charcoal/40 text-charcoal'}`}>
+                  <span className="font-inter text-[11px] font-medium">{opt.label}</span>
+                </button>
+              ))}
+            </div>
+            <p className="font-inter text-[10px] text-warm-grey/70">{selectedOption.description}</p>
+          </div>
+
+          {/* Topic */}
           <div className="flex flex-col gap-1.5">
             <label className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">Topic / Angle</label>
             <input type="text" value={topic} onChange={e => setTopic(e.target.value)}
               placeholder="e.g. Apple's new chip announcement and what it means for creators"
               className="border border-charcoal/15 bg-transparent px-4 py-2.5 font-inter text-sm text-charcoal placeholder-warm-grey/40 focus:outline-none focus:border-charcoal/40 transition-colors" />
-            <p className="font-inter text-[10px] text-warm-grey/60">
-              The agent will write the script and generate the video. Takes ~2 minutes.
-            </p>
           </div>
 
-          <div className="flex items-center gap-2">
-            <input type="checkbox" id="useCustom" checked={useCustomScript} onChange={e => setUseCustomScript(e.target.checked)}
-              className="w-3.5 h-3.5 accent-charcoal" />
-            <label htmlFor="useCustom" className="font-inter text-[10px] uppercase tracking-[0.18em] text-warm-grey cursor-pointer">
-              Write my own script
-            </label>
-          </div>
-
-          {useCustomScript && (
-            <div className="flex flex-col gap-1.5">
-              <label className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">
-                Script (15–30 seconds, ~32–65 words)
-              </label>
-              <textarea value={customScript} onChange={e => setCustomScript(e.target.value)} rows={4}
-                placeholder="Write exactly what the influencer will say…"
-                className="border border-charcoal/15 bg-transparent px-4 py-3 font-inter text-sm text-charcoal placeholder-warm-grey/40 resize-none focus:outline-none focus:border-charcoal/40 transition-colors" />
-              <span className={`font-inter text-[10px] self-end ${customScript.split(' ').length > 65 ? 'text-red-500' : 'text-warm-grey/50'}`}>
-                {customScript.split(' ').filter(Boolean).length} words
-              </span>
-            </div>
+          {/* Custom script (video only) */}
+          {postType === 'video' && (
+            <>
+              <div className="flex items-center gap-2">
+                <input type="checkbox" id="useCustom" checked={useCustomScript} onChange={e => setUseCustomScript(e.target.checked)}
+                  className="w-3.5 h-3.5 accent-charcoal" />
+                <label htmlFor="useCustom" className="font-inter text-[10px] uppercase tracking-[0.18em] text-warm-grey cursor-pointer">
+                  Write my own script
+                </label>
+              </div>
+              {useCustomScript && (
+                <div className="flex flex-col gap-1.5">
+                  <label className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">Script (15–30 s, ~32–65 words)</label>
+                  <textarea value={customScript} onChange={e => setCustomScript(e.target.value)} rows={4}
+                    placeholder="Write exactly what the influencer will say…"
+                    className="border border-charcoal/15 bg-transparent px-4 py-3 font-inter text-sm text-charcoal placeholder-warm-grey/40 resize-none focus:outline-none focus:border-charcoal/40 transition-colors" />
+                  <span className={`font-inter text-[10px] self-end ${customScript.split(' ').filter(Boolean).length > 65 ? 'text-red-500' : 'text-warm-grey/50'}`}>
+                    {customScript.split(' ').filter(Boolean).length} words
+                  </span>
+                </div>
+              )}
+            </>
           )}
 
           <button type="submit" disabled={loading}
             className="group relative overflow-hidden inline-flex items-center justify-center h-10 bg-charcoal text-white font-inter text-[10px] uppercase tracking-[0.22em] disabled:opacity-50">
             <span className="absolute inset-0 bg-gold -translate-x-full group-hover:translate-x-0 transition-transform duration-500"
               style={{ transitionTimingFunction: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)' }} aria-hidden="true" />
-            <span className="relative z-10">{loading ? 'Starting…' : 'Generate & Post'}</span>
+            <span className="relative z-10">
+              {loading ? 'Starting…' : postType === 'text' ? 'Generate Text Post' : postType === 'video' ? 'Generate Video Post' : 'Generate Post'}
+            </span>
           </button>
         </form>
       </div>
