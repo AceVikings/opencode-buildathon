@@ -7,7 +7,8 @@
  * POST   /api/influencers                   Create a new influencer (persona step)
  * GET    /api/influencers                   List all influencers for the authed user
  * GET    /api/influencers/:id               Get single influencer
- * PATCH  /api/influencers/:id/persona       Update persona fields
+ * PATCH  /api/influencers/:id/persona       Update persona fields (name, bio, niche, platforms, goal)
+ * DELETE /api/influencers/:id               Delete an influencer
  *
  * ── Brand intelligence ───────────────────────────────────────────────────────
  * POST   /api/influencers/:id/brand/text    Ingest a text chunk
@@ -18,15 +19,22 @@
  *
  * ── Image generation ─────────────────────────────────────────────────────────
  * POST   /api/influencers/:id/images/generate  Generate 4 candidate images via Gemini
- * POST   /api/influencers/:id/images/select    Select one candidate (or upload custom)
+ * POST   /api/influencers/:id/images/select    Select one candidate
  * POST   /api/influencers/:id/images/upload    Upload a custom image directly
  * GET    /api/influencers/:id/images/url       Get a fresh signed URL for the selected image
+ *
+ * ── X account (per-influencer) ────────────────────────────────────────────────
+ * GET    /api/influencers/:id/x/status      Get X connection status for this influencer
+ * POST   /api/influencers/:id/x/post        Post a tweet as this influencer
+ * DELETE /api/influencers/:id/x/disconnect  Revoke + remove X connection for this influencer
  */
 
 const { Router } = require('express')
 const multer = require('multer')
+const axios = require('axios')
 const { authenticate } = require('../middleware/auth')
 const Influencer = require('../models/Influencer')
+const XConnection = require('../models/XConnection')
 const { runBrandIntelAgent, runPersonaAgent } = require('../agents/influencerAgent')
 const { generateInfluencerImages } = require('../services/imageGen')
 const { uploadFile, getSignedUrl, bucket } = require('../config/storage')
@@ -51,16 +59,16 @@ async function getOwned(id, uid, res) {
 
 // Create
 router.post('/', async (req, res) => {
-  const { name, handle, bio, niche, platforms } = req.body
+  const { name, bio, niche, platforms, goal } = req.body
   if (!name) return res.status(400).json({ error: 'name is required' })
 
   const inf = await Influencer.create({
     uid: req.user.uid,
     name,
-    handle: handle ?? '',
     bio: bio ?? '',
     niche: niche ?? '',
     platforms: platforms ?? [],
+    goal: goal ?? '',
     status: 'persona_done',
   })
   return res.status(201).json(inf)
@@ -84,11 +92,19 @@ router.patch('/:id/persona', async (req, res) => {
   const inf = await getOwned(req.params.id, req.user.uid, res)
   if (!inf) return
 
-  const allowed = ['name', 'handle', 'bio', 'niche', 'platforms']
+  const allowed = ['name', 'bio', 'niche', 'platforms', 'goal']
   allowed.forEach((f) => { if (req.body[f] !== undefined) inf[f] = req.body[f] })
   if (inf.status === 'draft') inf.status = 'persona_done'
   await inf.save()
   return res.json(inf)
+})
+
+// Delete influencer
+router.delete('/:id', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+  await Influencer.deleteOne({ _id: inf._id })
+  return res.json({ deleted: true })
 })
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -303,6 +319,139 @@ router.get('/:id/images/url', async (req, res) => {
   inf.selectedImageUrl = url
   await inf.save()
   return res.json({ url })
+})
+
+// ────────────────────────────────────────────────────────────────────────────
+// X ACCOUNT — per-influencer
+// ────────────────────────────────────────────────────────────────────────────
+
+const X_TWEETS_URL = 'https://api.x.com/2/tweets'
+const X_REVOKE_URL = 'https://api.x.com/2/oauth2/revoke'
+
+function xBasicAuth() {
+  const id = process.env.X_CLIENT_ID
+  const secret = process.env.X_CLIENT_SECRET
+  return 'Basic ' + Buffer.from(`${id}:${secret}`).toString('base64')
+}
+
+async function getValidToken(conn) {
+  const BUFFER = 5 * 60 * 1000
+  if (conn.tokenExpiresAt && Date.now() >= conn.tokenExpiresAt - BUFFER && conn.refreshToken) {
+    const params = new URLSearchParams({
+      grant_type: 'refresh_token',
+      refresh_token: conn.refreshToken,
+    })
+    const { data } = await axios.post(
+      'https://api.x.com/2/oauth2/token',
+      params.toString(),
+      {
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization: xBasicAuth(),
+        },
+      }
+    )
+    conn.accessToken = data.access_token
+    if (data.refresh_token) conn.refreshToken = data.refresh_token
+    conn.tokenExpiresAt = data.expires_in ? Date.now() + data.expires_in * 1000 : null
+    await conn.save()
+  }
+  return conn.accessToken
+}
+
+// GET /api/influencers/:id/x/status
+router.get('/:id/x/status', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  if (!inf.xConnectionId) return res.json({ connected: false })
+
+  const conn = await XConnection.findById(inf.xConnectionId).lean()
+  if (!conn) {
+    // stale reference — clean it up
+    inf.xConnectionId = null
+    await inf.save()
+    return res.json({ connected: false })
+  }
+
+  return res.json({
+    connected: true,
+    xUserId: conn.xUserId,
+    xUsername: conn.xUsername,
+    xName: conn.xName,
+  })
+})
+
+// POST /api/influencers/:id/x/post  — body: { text }
+router.post('/:id/x/post', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  if (!inf.xConnectionId) {
+    return res.status(400).json({ error: 'No X account connected to this influencer' })
+  }
+
+  const { text } = req.body
+  if (!text || typeof text !== 'string' || !text.trim()) {
+    return res.status(400).json({ error: 'text is required' })
+  }
+  if (text.length > 280) {
+    return res.status(400).json({ error: 'text exceeds 280 characters' })
+  }
+
+  const conn = await XConnection.findById(inf.xConnectionId)
+  if (!conn) {
+    inf.xConnectionId = null
+    await inf.save()
+    return res.status(400).json({ error: 'X connection no longer exists — reconnect' })
+  }
+
+  const accessToken = await getValidToken(conn)
+
+  const { data: tweetData } = await axios.post(
+    X_TWEETS_URL,
+    { text: text.trim() },
+    {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    }
+  )
+
+  return res.status(201).json({ tweet: tweetData.data })
+})
+
+// DELETE /api/influencers/:id/x/disconnect — revoke token + remove connection
+router.delete('/:id/x/disconnect', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  if (inf.xConnectionId) {
+    const conn = await XConnection.findById(inf.xConnectionId)
+    if (conn) {
+      // Best-effort revocation
+      try {
+        const params = new URLSearchParams({
+          token: conn.accessToken,
+          token_type_hint: 'access_token',
+        })
+        await axios.post(X_REVOKE_URL, params.toString(), {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            Authorization: xBasicAuth(),
+          },
+        })
+      } catch (e) {
+        console.warn('[x/disconnect] token revocation failed (continuing):', e.message)
+      }
+      await XConnection.deleteOne({ _id: conn._id })
+    }
+    inf.xConnectionId = null
+    await inf.save()
+  }
+
+  return res.json({ disconnected: true })
 })
 
 module.exports = router

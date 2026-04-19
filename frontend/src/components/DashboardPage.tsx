@@ -1,19 +1,81 @@
+import { useEffect, useState } from 'react'
 import { signOut } from 'firebase/auth'
 import { auth } from '../lib/firebase'
 import { useAuth } from '../contexts/AuthContext'
-import { ConnectX } from './ConnectX'
+import type { Influencer } from '../lib/api'
+import { listInfluencers } from '../lib/api'
+import { InfluencerWizard } from './influencer/InfluencerWizard'
+import { InfluencerCard } from './influencer/InfluencerCard'
 
 export function DashboardPage() {
   const { user } = useAuth()
+
+  const [influencers, setInfluencers] = useState<Influencer[]>([])
+  const [loadingInfluencers, setLoadingInfluencers] = useState(true)
+  const [wizardOpen, setWizardOpen] = useState(false)
+  const [editTarget, setEditTarget] = useState<Influencer | null>(null)
 
   async function handleSignOut() {
     await signOut(auth)
   }
 
+  async function fetchInfluencers() {
+    setLoadingInfluencers(true)
+    try {
+      const list = await listInfluencers()
+      setInfluencers(list)
+    } catch {
+      // not fatal — show empty state
+    } finally {
+      setLoadingInfluencers(false)
+    }
+  }
+
+  useEffect(() => { fetchInfluencers() }, [])
+
+  function openCreate() {
+    setEditTarget(null)
+    setWizardOpen(true)
+  }
+
+  function openEdit(inf: Influencer) {
+    setEditTarget(inf)
+    setWizardOpen(true)
+  }
+
+  function handleWizardClose() {
+    setWizardOpen(false)
+    setEditTarget(null)
+    fetchInfluencers() // refresh list (draft may have been saved)
+  }
+
+  function handleWizardComplete(inf: Influencer) {
+    setWizardOpen(false)
+    setEditTarget(null)
+    setInfluencers((prev) => {
+      const exists = prev.find((x) => x._id === inf._id)
+      return exists ? prev.map((x) => (x._id === inf._id ? inf : x)) : [inf, ...prev]
+    })
+  }
+
+  // Derived stats
+  const complete = influencers.filter((i) => i.status === 'complete').length
+  const drafts = influencers.filter((i) => i.status !== 'complete').length
+  const xLinked = influencers.filter((i) => i.xConnectionId).length
+
   return (
     <div className="min-h-screen bg-alabaster">
       {/* Noise overlay */}
       <div className="noise-overlay" aria-hidden="true" />
+
+      {/* Wizard modal */}
+      {wizardOpen && (
+        <InfluencerWizard
+          initialInfluencer={editTarget}
+          onClose={handleWizardClose}
+          onComplete={handleWizardComplete}
+        />
+      )}
 
       {/* Top bar */}
       <header className="relative z-10 border-b border-charcoal/10 bg-alabaster/95 sticky top-0" style={{ backdropFilter: 'blur(12px)' }}>
@@ -26,10 +88,11 @@ export function DashboardPage() {
             <span className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">
               Dashboard
             </span>
-            {/* Dev badge */}
-            <span className="font-inter text-[9px] uppercase tracking-[0.18em] text-gold border border-gold/40 px-2 py-0.5">
-              Dev
-            </span>
+            {import.meta.env.DEV && (
+              <span className="font-inter text-[9px] uppercase tracking-[0.18em] text-gold border border-gold/40 px-2 py-0.5">
+                Dev
+              </span>
+            )}
           </div>
           <div className="flex items-center gap-6">
             <span className="font-inter text-[11px] text-warm-grey hidden sm:block">
@@ -60,10 +123,10 @@ export function DashboardPage() {
         {/* Stat cards */}
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-px bg-charcoal/10 border border-charcoal/10 mb-16">
           {[
-            { label: 'Active Influencers', value: '—', sub: 'No fleet yet' },
-            { label: 'Total Reach', value: '—', sub: 'Posts pending' },
-            { label: 'Campaigns', value: '—', sub: 'None running' },
-            { label: 'Engagement Rate', value: '—', sub: 'Awaiting data' },
+            { label: 'Active Influencers', value: complete > 0 ? String(complete) : '—', sub: complete > 0 ? 'Fleet running' : 'No fleet yet' },
+            { label: 'In Progress', value: drafts > 0 ? String(drafts) : '—', sub: drafts > 0 ? 'Continue setup' : 'All complete' },
+            { label: 'X Connected', value: xLinked > 0 ? String(xLinked) : '—', sub: xLinked > 0 ? 'Ready to post' : 'None linked' },
+            { label: 'Total Fleet', value: influencers.length > 0 ? String(influencers.length) : '—', sub: 'All influencers' },
           ].map(({ label, value, sub }) => (
             <div key={label} className="bg-alabaster p-8">
               <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey mb-3">
@@ -75,16 +138,19 @@ export function DashboardPage() {
           ))}
         </div>
 
-        {/* Placeholder sections */}
+        {/* Main content grid */}
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-px bg-charcoal/10 border border-charcoal/10">
 
-          {/* Main panel */}
+          {/* Influencer Fleet panel */}
           <div className="lg:col-span-8 bg-alabaster p-10">
             <div className="flex items-center justify-between mb-8">
               <p className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey">
                 Influencer Fleet
               </p>
-              <button className="group relative overflow-hidden inline-flex items-center justify-center h-9 px-6 bg-charcoal text-white font-inter text-[9px] uppercase tracking-[0.22em]">
+              <button
+                onClick={openCreate}
+                className="group relative overflow-hidden inline-flex items-center justify-center h-9 px-6 bg-charcoal text-white font-inter text-[9px] uppercase tracking-[0.22em]"
+              >
                 <span
                   className="absolute inset-0 bg-gold -translate-x-full group-hover:translate-x-0 transition-transform duration-500"
                   style={{ transitionTimingFunction: 'cubic-bezier(0.25, 0.46, 0.45, 0.94)' }}
@@ -93,13 +159,32 @@ export function DashboardPage() {
                 <span className="relative z-10">+ Create Influencer</span>
               </button>
             </div>
-            <div className="border border-dashed border-charcoal/15 flex flex-col items-center justify-center py-24 text-center">
-              <div className="w-8 h-px bg-gold mx-auto mb-6" />
-              <p className="font-playfair text-2xl text-charcoal mb-2">No influencers yet</p>
-              <p className="font-inter text-sm text-warm-grey max-w-xs">
-                Build your first AI-powered influencer to start amplifying your brand.
-              </p>
-            </div>
+
+            {loadingInfluencers ? (
+              <div className="border border-dashed border-charcoal/15 flex flex-col items-center justify-center py-24">
+                <p className="font-inter text-sm text-warm-grey animate-pulse">Loading fleet…</p>
+              </div>
+            ) : influencers.length === 0 ? (
+              <div className="border border-dashed border-charcoal/15 flex flex-col items-center justify-center py-24 text-center">
+                <div className="w-8 h-px bg-gold mx-auto mb-6" />
+                <p className="font-playfair text-2xl text-charcoal mb-2">No influencers yet</p>
+                <p className="font-inter text-sm text-warm-grey max-w-xs mb-6">
+                  Build your first AI-powered influencer to start amplifying your brand.
+                </p>
+                <button
+                  onClick={openCreate}
+                  className="font-inter text-[10px] uppercase tracking-[0.22em] text-warm-grey hover:text-charcoal transition-colors border border-charcoal/20 px-6 py-2.5 hover:border-charcoal/60"
+                >
+                  Get started
+                </button>
+              </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-4">
+                {influencers.map((inf) => (
+                  <InfluencerCard key={inf._id} influencer={inf} onEdit={openEdit} />
+                ))}
+              </div>
+            )}
           </div>
 
           {/* Side panel */}
@@ -109,23 +194,36 @@ export function DashboardPage() {
                 Recent Activity
               </p>
               <div className="flex flex-col gap-6">
-                {['Account created', 'Waitlist confirmed', 'Fleet ready to launch'].map((item, i) => (
-                  <div key={item} className="flex items-start gap-4">
-                    <div className={`w-1.5 h-1.5 mt-1.5 flex-shrink-0 ${i === 0 ? 'bg-gold' : 'bg-charcoal/20'}`} />
-                    <div>
-                      <p className="font-inter text-[12px] text-charcoal">{item}</p>
-                      <p className="font-inter text-[10px] text-warm-grey/60 mt-0.5">
-                        {i === 0 ? 'Just now' : 'Pending'}
-                      </p>
-                    </div>
-                  </div>
-                ))}
+                {influencers.length === 0 ? (
+                  <>
+                    {['Account created', 'Waitlist confirmed', 'Fleet ready to launch'].map((item, i) => (
+                      <div key={item} className="flex items-start gap-4">
+                        <div className={`w-1.5 h-1.5 mt-1.5 flex-shrink-0 ${i === 0 ? 'bg-gold' : 'bg-charcoal/20'}`} />
+                        <div>
+                          <p className="font-inter text-[12px] text-charcoal">{item}</p>
+                          <p className="font-inter text-[10px] text-warm-grey/60 mt-0.5">
+                            {i === 0 ? 'Just now' : 'Pending'}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    {influencers.slice(0, 5).map((inf, i) => (
+                      <div key={inf._id} className="flex items-start gap-4">
+                        <div className={`w-1.5 h-1.5 mt-1.5 flex-shrink-0 ${i === 0 ? 'bg-gold' : 'bg-charcoal/20'}`} />
+                        <div className="min-w-0">
+                          <p className="font-inter text-[12px] text-charcoal truncate">{inf.name}</p>
+                          <p className="font-inter text-[10px] text-warm-grey/60 mt-0.5">
+                            {inf.status === 'complete' ? 'Complete' : 'In progress'}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </>
+                )}
               </div>
-            </div>
-
-            {/* X account connection */}
-            <div className="mt-auto border-t border-charcoal/10">
-              <ConnectX />
             </div>
           </div>
         </div>

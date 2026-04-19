@@ -26,12 +26,17 @@ const influencerSchema = new Schema(
 
     // ── Step 1: Persona ──────────────────────────────────────────────────────
     name: { type: String, required: true, trim: true },
-    handle: { type: String, trim: true, default: '' },
     bio: { type: String, default: '' },
     // e.g. "luxury fashion", "fitness & wellness"
     niche: { type: String, default: '' },
-    // e.g. ["instagram", "tiktok"]
+    // e.g. ["instagram", "tiktok", "x"]
     platforms: [{ type: String }],
+    // Current campaign goal / objective for this influencer
+    goal: { type: String, default: '' },
+
+    // ── X account link ───────────────────────────────────────────────────────
+    // XConnection._id linked to this influencer for posting on X
+    xConnectionId: { type: String, default: null },
 
     // ── Step 2: Brand intelligence ───────────────────────────────────────────
     brandSources: [brandSourceSchema],

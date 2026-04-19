@@ -1,13 +1,19 @@
 const { Schema, model } = require('mongoose')
 
 /**
- * Stores an X (Twitter) OAuth 2.0 connection for a Firebase user.
- * One document per Firebase uid — replacing it on reconnect.
+ * Stores an X (Twitter) OAuth 2.0 connection scoped to a single Influencer.
+ * One document per influencer — replaced on reconnect.
+ *
+ * Indexed on influencerId for fast lookup when posting.
+ * Also indexed on uid so we can list all X connections for a given app user.
  */
 const xConnectionSchema = new Schema(
   {
-    // Firebase uid of the app user who connected their X account
-    uid: { type: String, required: true, unique: true, index: true },
+    // Firebase uid of the app user who owns this connection
+    uid: { type: String, required: true, index: true },
+
+    // The Influencer._id this connection belongs to (one-to-one)
+    influencerId: { type: String, required: true, unique: true, index: true },
 
     // X user details returned after token exchange
     xUserId: { type: String, required: true },

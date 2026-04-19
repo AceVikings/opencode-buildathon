@@ -3,11 +3,11 @@ const path = require('path')
 
 const projectId = process.env.GCP_PROJECT_ID
 const bucketName = process.env.GCP_BUCKET_NAME
-const serviceAccountPath = process.env.FIREBASE_SERVICE_ACCOUNT_PATH
+const serviceAccountPath = process.env.GCS_SERVICE_ACCOUNT_PATH
 
 if (!projectId) throw new Error('GCP_PROJECT_ID is not set in environment')
 if (!bucketName) throw new Error('GCP_BUCKET_NAME is not set in environment')
-if (!serviceAccountPath) throw new Error('FIREBASE_SERVICE_ACCOUNT_PATH is not set in environment')
+if (!serviceAccountPath) throw new Error('GCS_SERVICE_ACCOUNT_PATH is not set in environment')
 
 const storage = new Storage({
   projectId,
