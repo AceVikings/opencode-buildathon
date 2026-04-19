@@ -257,18 +257,19 @@ async function waitForVideo(influencerId, videoId, maxWaitMs = 5 * 60_000) {
   throw new Error(`HeyGen video ${videoId} timed out after ${maxWaitMs / 1000}s`)
 }
 
-// ── Upload video to X — chunked v2 dedicated endpoints ───────────────────────
-// New v2 API uses separate endpoints per step (old single /2/media/upload with
-// command= form field was deprecated in 2025):
-//   INIT    → POST /2/media/upload/initialize       (JSON body)
-//   APPEND  → POST /2/media/upload/{id}/append      (multipart/form-data)
-//   FINALIZE→ POST /2/media/upload/{id}/finalize    (no body)
+// ── Upload video to X — chunked media upload ─────────────────────────────────
+// Single endpoint POST https://api.x.com/2/media/upload with command= form field:
+//   INIT    → command=INIT,     media_type, total_bytes, media_category
+//   APPEND  → command=APPEND,   media_id, segment_index, media (binary chunk)
+//   FINALIZE→ command=FINALIZE, media_id
+//   STATUS  → GET  /2/media/upload?command=STATUS&media_id=
 //   STATUS  → GET  /2/media/upload/{id}
 
 const CHUNK_SIZE = 5 * 1024 * 1024  // 5 MB per chunk
 
 async function uploadVideoToX(accessToken, videoUrl) {
   const auth = { Authorization: `Bearer ${accessToken}` }
+  const UPLOAD_URL = 'https://api.x.com/2/media/upload'
 
   // 1. Download video from HeyGen CDN
   const dlRes = await fetch(videoUrl)
@@ -277,36 +278,31 @@ async function uploadVideoToX(accessToken, videoUrl) {
   const totalBytes = videoBuffer.length
   console.log(`[uploadVideoToX] Downloaded ${(totalBytes / 1024 / 1024).toFixed(1)} MB`)
 
-  // 2. INIT — JSON body to /initialize
-  const initRes = await fetch('https://api.x.com/2/media/upload/initialize', {
-    method: 'POST',
-    headers: { ...auth, 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      media_type: 'video/mp4',
-      total_bytes: totalBytes,
-      media_category: 'tweet_video',
-    }),
-  })
+  // 2. INIT
+  const initForm = new FormData()
+  initForm.append('command', 'INIT')
+  initForm.append('media_type', 'video/mp4')
+  initForm.append('total_bytes', String(totalBytes))
+  initForm.append('media_category', 'tweet_video')
+
+  const initRes = await fetch(UPLOAD_URL, { method: 'POST', headers: auth, body: initForm })
   const initData = await safeJson(initRes)
   if (!initRes.ok) throw new Error(`INIT failed (${initRes.status}): ${JSON.stringify(initData)}`)
-  const mediaId = initData.data?.id
+  const mediaId = initData.data?.id ?? initData.media_id_string
   if (!mediaId) throw new Error(`INIT returned no media id: ${JSON.stringify(initData)}`)
   console.log(`[uploadVideoToX] INIT ok, media_id=${mediaId}`)
 
-  // 3. APPEND chunks — multipart/form-data to /{id}/append
+  // 3. APPEND chunks
   let segmentIndex = 0
   for (let offset = 0; offset < totalBytes; offset += CHUNK_SIZE) {
     const chunk = videoBuffer.slice(offset, Math.min(offset + CHUNK_SIZE, totalBytes))
     const appendForm = new FormData()
+    appendForm.append('command', 'APPEND')
+    appendForm.append('media_id', mediaId)
     appendForm.append('segment_index', String(segmentIndex++))
     appendForm.append('media', new Blob([chunk], { type: 'video/mp4' }), 'chunk.mp4')
 
-    const appendRes = await fetch(`https://api.x.com/2/media/upload/${mediaId}/append`, {
-      method: 'POST',
-      headers: auth,
-      body: appendForm,
-    })
-    // 200/204 = success for APPEND
+    const appendRes = await fetch(UPLOAD_URL, { method: 'POST', headers: auth, body: appendForm })
     if (!appendRes.ok && appendRes.status !== 204) {
       const body = await appendRes.text()
       throw new Error(`APPEND segment ${segmentIndex - 1} failed (${appendRes.status}): ${body}`)
@@ -314,30 +310,33 @@ async function uploadVideoToX(accessToken, videoUrl) {
   }
   console.log(`[uploadVideoToX] APPEND complete (${segmentIndex} chunks)`)
 
-  // 4. FINALIZE — POST to /{id}/finalize (no body required)
-  const finalizeRes = await fetch(`https://api.x.com/2/media/upload/${mediaId}/finalize`, {
-    method: 'POST',
-    headers: auth,
-  })
+  // 4. FINALIZE
+  const finalizeForm = new FormData()
+  finalizeForm.append('command', 'FINALIZE')
+  finalizeForm.append('media_id', mediaId)
+
+  const finalizeRes = await fetch(UPLOAD_URL, { method: 'POST', headers: auth, body: finalizeForm })
   const finalizeData = await safeJson(finalizeRes)
   if (!finalizeRes.ok) throw new Error(`FINALIZE failed (${finalizeRes.status}): ${JSON.stringify(finalizeData)}`)
-  console.log(`[uploadVideoToX] FINALIZE ok, state=${finalizeData.data?.processing_info?.state}`)
+  console.log(`[uploadVideoToX] FINALIZE ok, state=${finalizeData.data?.processing_info?.state ?? finalizeData.processing_info?.state}`)
 
-  // 5. Poll STATUS if processing_info returned — GET /{id}
-  if (finalizeData.data?.processing_info) {
-    let checkAfter = finalizeData.data.processing_info.check_after_secs ?? 2
+  // 5. Poll STATUS if processing_info returned
+  const processingInfo = finalizeData.data?.processing_info ?? finalizeData.processing_info
+  if (processingInfo) {
+    let checkAfter = processingInfo.check_after_secs ?? 2
     for (let attempt = 0; attempt < 30; attempt++) {
       await new Promise(r => setTimeout(r, checkAfter * 1000))
       const statusRes = await fetch(
-        `https://api.x.com/2/media/upload/${mediaId}`,
+        `${UPLOAD_URL}?command=STATUS&media_id=${mediaId}`,
         { headers: auth }
       )
       const statusData = await safeJson(statusRes)
-      const state = statusData.data?.processing_info?.state
+      const info = statusData.data?.processing_info ?? statusData.processing_info
+      const state = info?.state
       console.log(`[uploadVideoToX] STATUS attempt ${attempt + 1}: ${state}`)
       if (state === 'succeeded') break
-      if (state === 'failed') throw new Error(`X video processing failed: ${JSON.stringify(statusData.data?.processing_info)}`)
-      checkAfter = statusData.data?.processing_info?.check_after_secs ?? 2
+      if (state === 'failed') throw new Error(`X video processing failed: ${JSON.stringify(info)}`)
+      checkAfter = info?.check_after_secs ?? 2
     }
   }
 
