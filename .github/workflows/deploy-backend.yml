@@ -135,10 +135,10 @@ jobs:
             --allow-unauthenticated
             --memory=2Gi
             --cpu=1
-            --min-instances=1
+            --min-instances=0
             --max-instances=10
             --concurrency=80
-            --timeout=300
+            --timeout=3000
             --set-env-vars=NODE_ENV=production,PLAYWRIGHT_BROWSERS_PATH=/ms-playwright,GCP_PROJECT_ID=${{ env.PROJECT_ID }},GCP_BUCKET_NAME=${{ secrets.GCP_BUCKET_NAME }},FIREBASE_SERVICE_ACCOUNT_PATH=/secrets/firebase/sa.json,GCS_SERVICE_ACCOUNT_PATH=/secrets/gcs/sa.json,MONGODB_URI=${{ secrets.MONGODB_URI }},GEMINI_API_KEY=${{ secrets.GEMINI_API_KEY }},FRONTEND_URL=${{ secrets.FRONTEND_URL }},X_BEARER_TOKEN=${{ secrets.X_BEARER_TOKEN }},X_CLIENT_ID=${{ secrets.X_CLIENT_ID }},X_CLIENT_SECRET=${{ secrets.X_CLIENT_SECRET }},X_CALLBACK_URL=${{ secrets.X_CALLBACK_URL }},HEYGEN_API_KEY=${{ secrets.HEYGEN_API_KEY }}
             --set-secrets=/secrets/firebase/sa.json=FIREBASE_SERVICE_ACCOUNT_LOQUE:latest,/secrets/gcs/sa.json=GCS_SERVICE_ACCOUNT_LOQUE:latest
 
