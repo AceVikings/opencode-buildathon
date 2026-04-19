@@ -61,6 +61,18 @@ const influencerSchema = new Schema(
     longTermStrategy: { type: String, default: '' },
     longTermStrategyUpdatedAt: { type: Date, default: null },
 
+    // ── Agent scheduling ─────────────────────────────────────────────────────
+    // Whether the autonomous posting schedule is active for this influencer
+    agentEnabled: { type: Boolean, default: false },
+    // Interval in minutes between autonomous posts (minimum 5, default 30)
+    agentIntervalMins: { type: Number, default: 30 },
+    // 'auto' = post immediately after generation
+    // 'approve' = hold as pending_approval until user approves/rejects
+    postApprovalMode: { type: String, enum: ['auto', 'approve'], default: 'approve' },
+    // Timestamps for scheduler bookkeeping
+    agentLastRanAt: { type: Date, default: null },
+    agentNextRunAt: { type: Date, default: null },
+
     // ── Workflow state ───────────────────────────────────────────────────────
     // draft → persona_done → brand_done → image_generated → complete
     status: {

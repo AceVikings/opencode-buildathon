@@ -43,9 +43,24 @@ const xPostSchema = new Schema(
 
     // When metrics were last successfully refreshed
     metricsUpdatedAt: { type: Date, default: null },
-
-    // Short-term agent decision summary stored after autonomous posting
     agentDecisionSummary: { type: String, default: null },
+
+    // HeyGen video generated for this post
+    heygenVideoId:  { type: String, default: null },
+    heygenVideoUrl: { type: String, default: null },
+    heygenThumbUrl: { type: String, default: null },
+    // Script used for the video
+    videoScript:    { type: String, default: null },
+
+    // Approval workflow
+    // 'posted' = live on X
+    // 'pending_approval' = drafted by agent, waiting for human approval
+    // 'rejected' = user rejected the draft
+    approvalStatus: {
+      type: String,
+      enum: ['posted', 'pending_approval', 'rejected'],
+      default: 'posted',
+    },
   },
   { timestamps: true }
 )
