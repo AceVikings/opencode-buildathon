@@ -24,5 +24,3 @@ generate-media.js
 generate-media.mjs
 generate-media.ts
 node_modules/
-package.json
-package-lock.json
