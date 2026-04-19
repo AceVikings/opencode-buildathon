@@ -12,6 +12,42 @@ const NUM_CANDIDATES = 4
 const AVATAR_POLL_INTERVAL_MS = 5_000
 const AVATAR_POLL_TIMEOUT_MS  = 120_000
 
+// ── Default voice (lazy-loaded) ───────────────────────────────────────────────
+// Prompt-based avatars have no default voice, so we must always supply voice_id.
+// We fetch a suitable English voice once and cache it for the process lifetime.
+
+let _defaultVoiceId = null
+
+async function getDefaultVoiceId() {
+  if (_defaultVoiceId) return _defaultVoiceId
+
+  try {
+    const resp = await fetch(
+      'https://api.heygen.com/v3/voices?language=English&limit=20',
+      { headers: { 'x-api-key': HEYGEN_API_KEY } }
+    )
+    const json = await resp.json()
+    const voices = json.data ?? []
+
+    // Prefer a natural-sounding female English voice; fall back to first available
+    const preferred = voices.find(v =>
+      v.gender === 'female' &&
+      v.name?.toLowerCase().includes('cassidy')
+    ) ?? voices.find(v => v.gender === 'female') ?? voices[0]
+
+    if (!preferred?.voice_id) throw new Error('No voices returned by HeyGen API')
+
+    _defaultVoiceId = preferred.voice_id
+    console.log(`[heygenService] Default voice: ${preferred.name} (${_defaultVoiceId})`)
+  } catch (err) {
+    console.error('[heygenService] Failed to fetch default voice:', err.message)
+    // Hard-code Cassidy as a known-good fallback
+    _defaultVoiceId = '16a09e4706f74997ba4ed05ea11470f6'
+  }
+
+  return _defaultVoiceId
+}
+
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
 async function heygenFetch(path, init = {}) {
@@ -91,11 +127,14 @@ async function generateAvatarCandidates(appearancePrompt, influencerName = 'Infl
 }
 
 async function createVideo({ avatarId, script, voiceId, title, aspectRatio = '9:16', resolution = '1080p', motionPrompt, expressiveness }) {
+  // Prompt-based avatars require an explicit voice_id — fetch default if not supplied
+  const resolvedVoiceId = voiceId ?? await getDefaultVoiceId()
+
   const body = {
     type: 'avatar',
     avatar_id: avatarId,
     script,
-    ...(voiceId        ? { voice_id: voiceId }          : {}),
+    voice_id: resolvedVoiceId,
     ...(title          ? { title }                       : {}),
     ...(aspectRatio    ? { aspect_ratio: aspectRatio }   : {}),
     ...(resolution     ? { resolution }                  : {}),
