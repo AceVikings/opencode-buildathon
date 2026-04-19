@@ -5,6 +5,7 @@ import type {
   AgentStep,
   AgentType,
 } from '../../lib/api'
+import { Markdown } from '../Markdown'
 import {
   runShortTermAgent,
   runLongTermAgent,
@@ -319,9 +320,7 @@ export function InfluencerAgentPanel({ influencerId, influencerName, hasXConnect
                       </p>
                     )}
                     <div className="bg-charcoal/[0.02] border border-charcoal/8 p-5">
-                      <pre className="font-inter text-[11px] text-charcoal/80 whitespace-pre-wrap leading-relaxed">
-                        {strategy}
-                      </pre>
+                      <Markdown>{strategy}</Markdown>
                     </div>
                   </>
                 ) : (
