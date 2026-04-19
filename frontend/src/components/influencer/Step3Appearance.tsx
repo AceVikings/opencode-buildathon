@@ -1,6 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import type { AvatarCandidate, Influencer } from '../../lib/api'
+import type { AvatarCandidate, Influencer, Voice } from '../../lib/api'
 import {
   generateAvatars,
   selectAvatar,
@@ -10,6 +10,7 @@ import {
   requestManualPost,
   getAgentConfig,
   updateAgentConfig,
+  listVoices,
 } from '../../lib/api'
 
 interface Props {
@@ -32,6 +33,14 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
   const [selectedAvatarId, setSelectedAvatarId] = useState<string | null>(influencer.heygenAvatarId)
   const [generating, setGenerating] = useState(false)
   const [selecting, setSelecting] = useState(false)
+
+  // Voice
+  const [voices, setVoices] = useState<Voice[]>([])
+  const [voicesLoading, setVoicesLoading] = useState(false)
+  const [selectedVoiceId, setSelectedVoiceId] = useState<string | null>(influencer.heygenVoiceId ?? null)
+  const [genderFilter, setGenderFilter] = useState<'all' | 'female' | 'male'>('all')
+  const [playingId, setPlayingId] = useState<string | null>(null)
+  const audioRef = useRef<HTMLAudioElement | null>(null)
 
   const [xStatus, setXStatus] = useState<XStatus | null>(null)
   const [xLoading, setXLoading] = useState(true)
@@ -61,8 +70,32 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
       window.history.replaceState({}, '', window.location.pathname)
     }
     fetchXStatus()
+    fetchVoices()
     if (isComplete) loadAgentConfig()
   }, [influencer._id])
+
+  async function fetchVoices() {
+    setVoicesLoading(true)
+    try {
+      const { voices: v } = await listVoices()
+      setVoices(v)
+    } catch { /* silent */ }
+    finally { setVoicesLoading(false) }
+  }
+
+  function playPreview(voice: Voice) {
+    if (playingId === voice.id) {
+      audioRef.current?.pause()
+      setPlayingId(null)
+      return
+    }
+    if (audioRef.current) audioRef.current.pause()
+    const audio = new Audio(voice.previewUrl)
+    audioRef.current = audio
+    audio.onended = () => setPlayingId(null)
+    audio.play().catch(() => {})
+    setPlayingId(voice.id)
+  }
 
   async function fetchXStatus() {
     setXLoading(true)
@@ -109,9 +142,10 @@ export function Step3Appearance({ influencer, onUpdated, onComplete }: Props) {
 
   async function handleSelect() {
     if (!selectedAvatarId) { setError('Select an avatar first'); return }
+    if (!selectedVoiceId) { setError('Choose a voice before completing'); return }
     setSelecting(true); setError(null)
     try {
-      const { influencer: updated } = await selectAvatar(influencer._id, selectedAvatarId)
+      const { influencer: updated } = await selectAvatar(influencer._id, selectedAvatarId, selectedVoiceId)
       onUpdated(updated)
       onComplete(updated)
     } catch (e) { setError(e instanceof Error ? e.message : 'Select failed') }
