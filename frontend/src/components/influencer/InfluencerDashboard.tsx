@@ -67,6 +67,7 @@ function PostCard({
   const [approving, setApproving] = useState(false)
   const [rejecting, setRejecting] = useState(false)
   const [expanded, setExpanded] = useState(false)
+  const [videoOpen, setVideoOpen] = useState(false)
 
   const statusColour =
     post.approvalStatus === 'posted' ? 'bg-gold' :
@@ -92,11 +93,23 @@ function PostCard({
   return (
     <div className="border border-charcoal/10 bg-alabaster">
       <div className="flex gap-4 p-5">
-        {/* Thumb */}
-        {post.heygenThumbUrl ? (
-          <div className="w-16 h-24 flex-shrink-0 overflow-hidden border border-charcoal/10">
-            <img src={post.heygenThumbUrl} alt="thumb" className="w-full h-full object-cover" />
-          </div>
+        {/* Thumb — clickable if video exists */}
+        {post.heygenThumbUrl || post.heygenVideoUrl ? (
+          <button
+            type="button"
+            onClick={() => post.heygenVideoUrl && setVideoOpen(v => !v)}
+            className={`w-16 h-24 flex-shrink-0 overflow-hidden border border-charcoal/10 relative group ${post.heygenVideoUrl ? 'cursor-pointer' : 'cursor-default'}`}
+          >
+            {post.heygenThumbUrl
+              ? <img src={post.heygenThumbUrl} alt="thumb" className="w-full h-full object-cover" />
+              : <div className="w-full h-full bg-taupe/40" />
+            }
+            {post.heygenVideoUrl && (
+              <div className="absolute inset-0 bg-charcoal/40 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity">
+                <span className="text-white text-base">{videoOpen ? '✕' : '▶'}</span>
+              </div>
+            )}
+          </button>
         ) : (
           <div className="w-16 h-24 flex-shrink-0 bg-taupe/40 flex items-center justify-center border border-charcoal/10">
             <span className="font-inter text-[8px] text-warm-grey/50 uppercase">No thumb</span>
@@ -137,10 +150,12 @@ function PostCard({
           {/* Actions */}
           <div className="flex items-center gap-3 mt-1">
             {post.heygenVideoUrl && (
-              <a href={post.heygenVideoUrl} target="_blank" rel="noopener noreferrer"
-                className="font-inter text-[9px] uppercase tracking-[0.15em] text-gold hover:text-charcoal transition-colors">
-                Watch ▶
-              </a>
+              <button
+                onClick={() => setVideoOpen(v => !v)}
+                className="font-inter text-[9px] uppercase tracking-[0.15em] text-gold hover:text-charcoal transition-colors"
+              >
+                {videoOpen ? 'Hide ▼' : 'Watch ▶'}
+              </button>
             )}
             {post.videoScript && (
               <button onClick={() => setExpanded(v => !v)}
@@ -163,6 +178,20 @@ function PostCard({
           </div>
         </div>
       </div>
+
+      {/* Inline video player */}
+      {videoOpen && post.heygenVideoUrl && (
+        <div className="border-t border-charcoal/10 bg-charcoal/[0.03] p-4">
+          <video
+            src={post.heygenVideoUrl}
+            poster={post.heygenThumbUrl ?? undefined}
+            controls
+            autoPlay
+            className="w-full max-h-[480px] object-contain bg-charcoal"
+            style={{ aspectRatio: '9/16', maxWidth: '270px', margin: '0 auto', display: 'block' }}
+          />
+        </div>
+      )}
 
       {expanded && post.videoScript && (
         <div className="border-t border-charcoal/10 px-5 py-4 bg-charcoal/[0.02]">
