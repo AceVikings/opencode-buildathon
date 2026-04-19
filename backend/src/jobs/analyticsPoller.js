@@ -9,6 +9,12 @@
 const XPost = require('../models/XPost')
 const XConnection = require('../models/XConnection')
 
+async function safeJson(res) {
+  const text = await res.text().catch(() => '')
+  if (!text.trim()) return {}
+  try { return JSON.parse(text) } catch { return { _raw: text } }
+}
+
 const POLL_INTERVAL_MS = 60 * 60 * 1000   // 1 hour
 const MAX_TWEET_AGE_DAYS = 90
 const BATCH_SIZE = 100
@@ -31,7 +37,7 @@ async function getValidToken(conn) {
     const headers = { 'Content-Type': 'application/x-www-form-urlencoded' }
     if (clientSecret) headers.Authorization = 'Basic ' + Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
     const res = await fetch('https://api.x.com/2/oauth2/token', { method: 'POST', headers, body: params.toString() })
-    const data = await res.json()
+    const data = await safeJson(res)
     conn.accessToken = data.access_token
     if (data.refresh_token) conn.refreshToken = data.refresh_token
     conn.tokenExpiresAt = data.expires_in ? Date.now() + data.expires_in * 1000 : null
@@ -58,12 +64,10 @@ async function fetchAnalyticsBatch(tweetIds, accessToken) {
     headers: { Authorization: `Bearer ${accessToken}` },
   })
 
+  const data = await safeJson(res)
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(`X analytics API ${res.status}: ${JSON.stringify(err)}`)
+    throw new Error(`X analytics API ${res.status}: ${JSON.stringify(data)}`)
   }
-
-  const data = await res.json()
   return data.data ?? []
 }
 

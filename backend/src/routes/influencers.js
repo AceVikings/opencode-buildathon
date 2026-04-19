@@ -68,6 +68,12 @@ const { uploadFile, getSignedUrl } = require('../config/storage')
 const router = Router()
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 20 * 1024 * 1024 } })
 
+async function safeJson(res) {
+  const text = await res.text().catch(() => '')
+  if (!text.trim()) return {}
+  try { return JSON.parse(text) } catch { return { _raw: text } }
+}
+
 // ── Auth guard on all routes ─────────────────────────────────────────────────
 router.use(authenticate)
 
@@ -87,7 +93,7 @@ router.get('/voices', async (_req, res) => {
     const r = await fetch('https://api.heygen.com/v3/voices?language=English&limit=100', {
       headers: { 'x-api-key': HEYGEN_API_KEY },
     })
-    const json = await r.json()
+    const json = await safeJson(r)
     const voices = (json.data ?? [])
       // Only include voices that have a preview URL so users can listen before choosing
       .filter(v => v.preview_audio_url && v.name?.trim())
@@ -426,7 +432,7 @@ async function getValidToken(conn) {
     const params = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: conn.refreshToken })
     if (!process.env.X_CLIENT_SECRET) params.append('client_id', process.env.X_CLIENT_ID)
     const res = await fetch('https://api.x.com/2/oauth2/token', { method: 'POST', headers: xTokenHeaders(), body: params.toString() })
-    const data = await res.json()
+    const data = await safeJson(res)
     conn.accessToken = data.access_token
     if (data.refresh_token) conn.refreshToken = data.refresh_token
     conn.tokenExpiresAt = data.expires_in ? Date.now() + data.expires_in * 1000 : null
@@ -509,7 +515,7 @@ router.post('/:id/x/media/upload', upload.single('media'), async (req, res) => {
       headers: { ...xAuthHeader, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: initParams.toString(),
     })
-    const initData = await initRes.json()
+    const initData = await safeJson(initRes)
     const mediaId = initData.media_id_string
 
     // APPEND
@@ -531,7 +537,7 @@ router.post('/:id/x/media/upload', upload.single('media'), async (req, res) => {
       headers: { ...xAuthHeader, 'Content-Type': 'application/x-www-form-urlencoded' },
       body: finalizeParams.toString(),
     })
-    const finalizeData = await finalizeRes.json()
+    const finalizeData = await safeJson(finalizeRes)
 
     // Poll for processing if needed
     if (finalizeData.processing_info?.state === 'pending') {
@@ -542,7 +548,7 @@ router.post('/:id/x/media/upload', upload.single('media'), async (req, res) => {
           `https://upload.twitter.com/1.1/media/upload.json?command=STATUS&media_id=${mediaId}`,
           { headers: xAuthHeader }
         )
-        const statusData = await statusRes.json()
+        const statusData = await safeJson(statusRes)
         const state = statusData.processing_info?.state
         if (state === 'succeeded') break
         if (state === 'failed') return res.status(422).json({ error: 'X video processing failed', detail: statusData.processing_info })
@@ -559,7 +565,7 @@ router.post('/:id/x/media/upload', upload.single('media'), async (req, res) => {
   form.append('media_category', 'tweet_image')
 
   const uploadRes = await fetch(X_MEDIA_UPLOAD_URL, { method: 'POST', headers: xAuthHeader, body: form })
-  const uploadData = await uploadRes.json()
+  const uploadData = await safeJson(uploadRes)
 
   const mediaId = uploadData.data?.id
   if (!mediaId) {
@@ -572,7 +578,7 @@ router.post('/:id/x/media/upload', upload.single('media'), async (req, res) => {
     for (let i = 0; i < 10; i++) {
       await new Promise(r => setTimeout(r, checkAfter * 1000))
       const statusRes = await fetch(`https://api.x.com/2/media/upload?media_id=${mediaId}`, { headers: xAuthHeader })
-      const statusData = await statusRes.json()
+      const statusData = await safeJson(statusRes)
       const state = statusData.data?.processing_info?.state
       if (state === 'succeeded' || !state) break
       if (state === 'failed') return res.status(422).json({ error: 'X media processing failed' })
@@ -622,7 +628,7 @@ router.post('/:id/x/post', async (req, res) => {
     headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(tweetBody),
   })
-  const tweetData = await tweetRes.json()
+  const tweetData = await safeJson(tweetRes)
   const tweet = tweetData.data
 
   // Persist the post so analytics can be tracked
@@ -957,7 +963,7 @@ router.post('/:id/agents/posts/:postId/approve', async (req, res) => {
     const headers = { 'Content-Type': 'application/x-www-form-urlencoded' }
     if (process.env.X_CLIENT_SECRET) headers.Authorization = 'Basic ' + Buffer.from(`${process.env.X_CLIENT_ID}:${process.env.X_CLIENT_SECRET}`).toString('base64')
     const r = await fetch('https://api.x.com/2/oauth2/token', { method: 'POST', headers, body: params.toString() })
-    const d = await r.json()
+    const d = await safeJson(r)
     conn.accessToken = d.access_token
     if (d.refresh_token) conn.refreshToken = d.refresh_token
     conn.tokenExpiresAt = d.expires_in ? Date.now() + d.expires_in * 1000 : null
@@ -979,7 +985,7 @@ router.post('/:id/agents/posts/:postId/approve', async (req, res) => {
       const initRes = await fetch('https://upload.twitter.com/1.1/media/upload.json', {
         method: 'POST', headers: { ...authHeader, 'Content-Type': 'application/x-www-form-urlencoded' }, body: initParams.toString(),
       })
-      const initData = await initRes.json()
+      const initData = await safeJson(initRes)
       if (!initRes.ok) throw new Error(`INIT failed: ${JSON.stringify(initData)}`)
       xMediaId = initData.media_id_string
 
@@ -1000,7 +1006,7 @@ router.post('/:id/agents/posts/:postId/approve', async (req, res) => {
       const finalizeRes = await fetch('https://upload.twitter.com/1.1/media/upload.json', {
         method: 'POST', headers: { ...authHeader, 'Content-Type': 'application/x-www-form-urlencoded' }, body: finalizeParams.toString(),
       })
-      const finalizeData = await finalizeRes.json()
+      const finalizeData = await safeJson(finalizeRes)
       if (!finalizeRes.ok) throw new Error(`FINALIZE failed: ${JSON.stringify(finalizeData)}`)
 
       // Poll STATUS
@@ -1011,7 +1017,7 @@ router.post('/:id/agents/posts/:postId/approve', async (req, res) => {
         if (state === 'failed') throw new Error('X video processing failed')
         await new Promise(r => setTimeout(r, checkAfter * 1000))
         const statusRes = await fetch(`https://upload.twitter.com/1.1/media/upload.json?command=STATUS&media_id=${xMediaId}`, { headers: authHeader })
-        const statusData = await statusRes.json()
+        const statusData = await safeJson(statusRes)
         if (statusData.processing_info?.state === 'succeeded') break
         if (statusData.processing_info?.state === 'failed') throw new Error('X video processing failed')
         checkAfter = statusData.processing_info?.check_after_secs ?? 5
@@ -1032,7 +1038,7 @@ router.post('/:id/agents/posts/:postId/approve', async (req, res) => {
     headers: { Authorization: `Bearer ${conn.accessToken}`, 'Content-Type': 'application/json' },
     body: JSON.stringify(tweetBody),
   })
-  const postData = await postRes.json()
+  const postData = await safeJson(postRes)
   if (!postRes.ok) return res.status(postRes.status).json({ error: 'X post failed', detail: postData })
 
   draft.tweetId = postData.data.id

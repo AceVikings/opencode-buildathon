@@ -50,13 +50,19 @@ async function getDefaultVoiceId() {
 
 async function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
 
+async function safeJson(res) {
+  const text = await res.text().catch(() => '')
+  if (!text.trim()) return {}
+  try { return JSON.parse(text) } catch { return { _raw: text } }
+}
+
 async function heygenFetch(path, init = {}) {
   const res = await fetch(`${BASE}${path}`, { ...init, headers: { ...headers(), ...(init.headers ?? {}) } })
+  const json = await safeJson(res)
   if (!res.ok) {
-    const err = await res.json().catch(() => ({}))
-    throw new Error(`HeyGen ${res.status} ${path}: ${JSON.stringify(err)}`)
+    throw new Error(`HeyGen ${res.status} ${path}: ${JSON.stringify(json)}`)
   }
-  return res.json()
+  return json
 }
 
 async function pollAvatarLook(lookId) {

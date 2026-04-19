@@ -20,6 +20,12 @@ const Influencer = require('../models/Influencer')
 
 const router = Router()
 
+async function safeJson(res) {
+  const text = await res.text().catch(() => '')
+  if (!text.trim()) return {}
+  try { return JSON.parse(text) } catch { return { _raw: text } }
+}
+
 // ── Env vars (read lazily so dotenv has time to load) ─────────────────────────
 const cfg = () => ({
   clientId:    process.env.X_CLIENT_ID,
@@ -67,7 +73,7 @@ async function refreshToken(conn) {
   const params = new URLSearchParams({ grant_type: 'refresh_token', refresh_token: conn.refreshToken })
   addClientIdIfPublic(params)
   const res = await fetch(X_TOKEN_URL, { method: 'POST', headers: tokenAuthHeaders(), body: params.toString() })
-  const data = await res.json()
+  const data = await safeJson(res)
   conn.accessToken = data.access_token
   if (data.refresh_token) conn.refreshToken = data.refresh_token
   conn.tokenExpiresAt = data.expires_in ? Date.now() + data.expires_in * 1000 : null
@@ -178,12 +184,12 @@ router.get('/callback', async (req, res) => {
     })
 
     if (!tokenRes.ok) {
-      const errBody = await tokenRes.json().catch(() => ({}))
+      const errBody = await safeJson(tokenRes)
       console.error('[twitter] token exchange failed:', errBody)
       return res.redirect(`${frontend}/dashboard?x_error=token_exchange_failed`)
     }
 
-    const tokenData = await tokenRes.json()
+    const tokenData = await safeJson(tokenRes)
     const accessToken  = tokenData.access_token
     const refreshToken = tokenData.refresh_token ?? null
     const tokenExpiresAt = tokenData.expires_in ? Date.now() + tokenData.expires_in * 1000 : null
@@ -192,7 +198,7 @@ router.get('/callback', async (req, res) => {
     const meRes = await fetch(`${X_ME_URL}?user.fields=name,username`, {
       headers: { Authorization: `Bearer ${accessToken}` },
     })
-    const meData = await meRes.json()
+    const meData = await safeJson(meRes)
     const xUser = meData.data
 
     console.log(`[twitter] connected @${xUser.username} → influencer ${influencerId}`)
@@ -233,7 +239,7 @@ router.get('/trends', authenticate, async (req, res) => {
             'https://api.x.com/2/users/personalized_trends?personalized_trend.fields=trend_name,post_count,category,trending_since',
             { headers: { Authorization: `Bearer ${token}` } }
           )
-          const data = await trendsRes.json()
+          const data = await safeJson(trendsRes)
           return res.json({
             type: 'personalized',
             trends: (data.data ?? []).map(t => ({
@@ -256,7 +262,7 @@ router.get('/trends', authenticate, async (req, res) => {
       `https://api.x.com/2/trends/by/woeid/${parsedWoeid}?max_trends=20&trend.fields=trend_name,tweet_count`,
       { headers: { Authorization: `Bearer ${bearerToken}` } }
     )
-    const data = await trendsRes.json()
+    const data = await safeJson(trendsRes)
     return res.json({
       type: 'woeid',
       woeid: parsedWoeid,

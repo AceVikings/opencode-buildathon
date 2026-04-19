@@ -24,6 +24,12 @@
  */
 
 const { z } = require('zod')
+
+async function safeJson(res) {
+  const text = await res.text().catch(() => '')
+  if (!text.trim()) return {}
+  try { return JSON.parse(text) } catch { return { _raw: text } }
+}
 const { DynamicStructuredTool } = require('@langchain/core/tools')
 const { createReactAgent } = require('@langchain/langgraph/prebuilt')
 const { ChatGoogleGenerativeAI } = require('@langchain/google-genai')
@@ -120,7 +126,7 @@ const webSearchTool = new DynamicStructuredTool({
       if (GOOGLE_CSE_KEY && GOOGLE_CSE_ID) {
         const qs = new URLSearchParams({ key: GOOGLE_CSE_KEY, cx: GOOGLE_CSE_ID, q: query, num: String(Math.min(numResults, 5)) })
         const res = await fetch(`https://www.googleapis.com/customsearch/v1?${qs}`)
-        const json = await res.json()
+        const json = await safeJson(res)
         return (json.items ?? []).map(item =>
           `**${item.title}**\n${item.snippet}\n${item.link}`
         ).join('\n\n') || 'No results.'
@@ -128,7 +134,7 @@ const webSearchTool = new DynamicStructuredTool({
 
       const qs = new URLSearchParams({ q: query, format: 'json', no_html: '1', skip_disambig: '1' })
       const res = await fetch(`https://api.duckduckgo.com/?${qs}`)
-      const json = await res.json()
+      const json = await safeJson(res)
       const parts = []
       if (json.AbstractText) parts.push(json.AbstractText)
       ;(json.RelatedTopics ?? []).slice(0, numResults).forEach(t => { if (t.Text) parts.push(t.Text) })
