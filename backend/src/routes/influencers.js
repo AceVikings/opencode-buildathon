@@ -33,6 +33,13 @@
  * ── Post analytics ────────────────────────────────────────────────────────────
  * GET    /api/influencers/:id/x/posts       List all XPost records for this influencer
  * GET    /api/influencers/:id/x/analytics   Aggregate metrics summary across all posts
+ *
+ * ── Agents ────────────────────────────────────────────────────────────────────
+ * POST   /api/influencers/:id/agents/short-term/run   Trigger short-term agent (async)
+ * POST   /api/influencers/:id/agents/long-term/run    Trigger long-term strategy agent (async)
+ * GET    /api/influencers/:id/agents/logs              List all AgentLog entries (newest first)
+ * GET    /api/influencers/:id/agents/logs/:logId       Get a single AgentLog with full steps
+ * GET    /api/influencers/:id/agents/strategy          Get current long-term strategy doc
  */
 
 const { Router } = require('express')
@@ -42,7 +49,10 @@ const { authenticate } = require('../middleware/auth')
 const Influencer = require('../models/Influencer')
 const XConnection = require('../models/XConnection')
 const XPost = require('../models/XPost')
+const AgentLog = require('../models/AgentLog')
 const { runBrandIntelAgent, runPersonaAgent } = require('../agents/influencerAgent')
+const { runShortTermAgent } = require('../agents/shortTermAgent')
+const { runLongTermAgent } = require('../agents/longTermAgent')
 const { generateAvatarCandidates, createVideo, getVideoStatus } = require('../services/heygenService')
 const { uploadFile, getSignedUrl } = require('../config/storage')
 
@@ -547,6 +557,114 @@ router.get('/:id/x/analytics', async (req, res) => {
       metricsUpdatedAt: p.metricsUpdatedAt,
       metrics: p.metrics,
     })),
+  })
+})
+
+// ────────────────────────────────────────────────────────────────────────────
+// AGENTS
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * POST /api/influencers/:id/agents/short-term/run
+ *
+ * Triggers the short-term agent asynchronously.
+ * Returns { logId, status: 'running' } immediately.
+ * Client polls GET /agents/logs/:logId for completion.
+ */
+router.post('/:id/agents/short-term/run', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  if (!inf.xConnectionId) {
+    return res.status(400).json({ error: 'No X account connected — connect one in Step 3 first' })
+  }
+
+  // Create a placeholder log immediately so client has a logId to poll
+  const log = await AgentLog.create({
+    influencerId: inf._id.toString(),
+    uid: req.user.uid,
+    agentType: 'short_term',
+    status: 'running',
+    steps: [],
+  })
+
+  // Run agent in background — do not await
+  runShortTermAgent(inf._id.toString(), req.user.uid)
+    .catch((err) => console.error('[route/short-term]', err.message))
+
+  return res.status(202).json({ logId: log._id.toString(), status: 'running' })
+})
+
+/**
+ * POST /api/influencers/:id/agents/long-term/run
+ *
+ * Triggers the long-term strategy agent asynchronously.
+ * Returns { logId, status: 'running' } immediately.
+ */
+router.post('/:id/agents/long-term/run', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  const log = await AgentLog.create({
+    influencerId: inf._id.toString(),
+    uid: req.user.uid,
+    agentType: 'long_term',
+    status: 'running',
+    steps: [],
+  })
+
+  runLongTermAgent(inf._id.toString(), req.user.uid)
+    .catch((err) => console.error('[route/long-term]', err.message))
+
+  return res.status(202).json({ logId: log._id.toString(), status: 'running' })
+})
+
+/**
+ * GET /api/influencers/:id/agents/logs
+ * Returns all agent logs for this influencer, newest first.
+ * Steps are omitted for list view — fetch individual log for full trace.
+ */
+router.get('/:id/agents/logs', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  const logs = await AgentLog.find({ influencerId: inf._id.toString() })
+    .sort({ createdAt: -1 })
+    .limit(50)
+    .select('-steps')  // exclude heavy steps array from list
+    .lean()
+
+  return res.json({ logs })
+})
+
+/**
+ * GET /api/influencers/:id/agents/logs/:logId
+ * Returns a single agent log including the full reasoning steps.
+ */
+router.get('/:id/agents/logs/:logId', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  const log = await AgentLog.findOne({
+    _id: req.params.logId,
+    influencerId: inf._id.toString(),
+  }).lean()
+
+  if (!log) return res.status(404).json({ error: 'Log not found' })
+  return res.json({ log })
+})
+
+/**
+ * GET /api/influencers/:id/agents/strategy
+ * Returns the current long-term strategy document.
+ */
+router.get('/:id/agents/strategy', async (req, res) => {
+  const inf = await getOwned(req.params.id, req.user.uid, res)
+  if (!inf) return
+
+  return res.json({
+    strategy: inf.longTermStrategy ?? '',
+    updatedAt: inf.longTermStrategyUpdatedAt ?? null,
   })
 })
 

@@ -325,6 +325,70 @@ export async function getInfluencerPosts(influencerId: string): Promise<{ posts:
   return res.json()
 }
 
+// ── Agents ────────────────────────────────────────────────────────────────────
+
+export type AgentType = 'short_term' | 'long_term'
+export type AgentStatus = 'running' | 'completed' | 'failed'
+
+export interface AgentStep {
+  type: 'thought' | 'tool_call' | 'tool_result' | 'decision'
+  tool: string | null
+  content: string
+}
+
+export interface AgentLogSummary {
+  _id: string
+  influencerId: string
+  agentType: AgentType
+  status: AgentStatus
+  summary: string
+  xPostId: string | null
+  error: string | null
+  durationMs: number | null
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AgentLogFull extends AgentLogSummary {
+  steps: AgentStep[]
+}
+
+export async function runShortTermAgent(influencerId: string): Promise<{ logId: string; status: string }> {
+  const res = await apiFetch(`/influencers/${influencerId}/agents/short-term/run`, { method: 'POST' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error((err as { error?: string }).error ?? 'Failed to start short-term agent')
+  }
+  return res.json()
+}
+
+export async function runLongTermAgent(influencerId: string): Promise<{ logId: string; status: string }> {
+  const res = await apiFetch(`/influencers/${influencerId}/agents/long-term/run`, { method: 'POST' })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error((err as { error?: string }).error ?? 'Failed to start long-term agent')
+  }
+  return res.json()
+}
+
+export async function getAgentLogs(influencerId: string): Promise<{ logs: AgentLogSummary[] }> {
+  const res = await apiFetch(`/influencers/${influencerId}/agents/logs`)
+  if (!res.ok) throw new Error('Failed to fetch agent logs')
+  return res.json()
+}
+
+export async function getAgentLog(influencerId: string, logId: string): Promise<{ log: AgentLogFull }> {
+  const res = await apiFetch(`/influencers/${influencerId}/agents/logs/${logId}`)
+  if (!res.ok) throw new Error('Failed to fetch agent log')
+  return res.json()
+}
+
+export async function getAgentStrategy(influencerId: string): Promise<{ strategy: string; updatedAt: string | null }> {
+  const res = await apiFetch(`/influencers/${influencerId}/agents/strategy`)
+  if (!res.ok) throw new Error('Failed to fetch strategy')
+  return res.json()
+}
+
 // ── X Trends ─────────────────────────────────────────────────────────────────
 
 export interface Trend {

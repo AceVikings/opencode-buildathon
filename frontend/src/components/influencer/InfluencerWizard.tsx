@@ -3,8 +3,9 @@ import type { Influencer } from '../../lib/api'
 import { Step1Persona } from './Step1Persona'
 import { Step2Brand } from './Step2Brand'
 import { Step3Appearance } from './Step3Appearance'
+import { InfluencerAgentPanel } from './InfluencerAgentPanel'
 
-export type WizardStep = 1 | 2 | 3
+export type WizardStep = 1 | 2 | 3 | 4
 
 interface Props {
   /** null = create new; pass existing draft to resume */
@@ -29,7 +30,7 @@ function stepFromStatus(inf: Influencer | null | undefined): WizardStep {
   }
 }
 
-const STEP_LABELS = ['Persona', 'Brand', 'Appearance']
+const STEP_LABELS = ['Persona', 'Brand', 'Appearance', 'Agents']
 
 export function InfluencerWizard({ initialInfluencer, onClose, onComplete }: Props) {
   const [influencer, setInfluencer] = useState<Influencer | null>(initialInfluencer ?? null)
@@ -91,8 +92,8 @@ export function InfluencerWizard({ initialInfluencer, onClose, onComplete }: Pro
                   <div key={label} className="flex items-center">
                     <button
                       onClick={() => {
-                        // Only allow going back, or forward if influencer exists
-                        if (s < step || (s <= 3 && influencer)) setStep(s)
+                        const isComplete = influencer?.status === 'complete'
+                        if (s < step || (s <= 3 && influencer) || (s === 4 && isComplete)) setStep(s)
                       }}
                       className={`flex items-center gap-1.5 px-3 py-1 font-inter text-[9px] uppercase tracking-[0.2em] transition-colors ${
                         active
@@ -151,11 +152,18 @@ export function InfluencerWizard({ initialInfluencer, onClose, onComplete }: Pro
               onComplete={handleComplete}
             />
           )}
+          {step === 4 && influencer && (
+            <InfluencerAgentPanel
+              influencerId={influencer._id}
+              influencerName={influencer.name}
+              hasXConnection={!!influencer.xConnectionId}
+            />
+          )}
         </div>
 
         {/* Mobile step dots */}
         <div className="sm:hidden flex justify-center gap-2 pb-4 flex-shrink-0">
-          {([1, 2, 3] as WizardStep[]).map((s) => (
+          {([1, 2, 3, 4] as WizardStep[]).map((s) => (
             <div
               key={s}
               className={`w-1.5 h-1.5 transition-colors ${step === s ? 'bg-charcoal' : step > s ? 'bg-gold' : 'bg-charcoal/20'}`}
